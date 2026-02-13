@@ -1,4 +1,4 @@
-PoseGaze (work title) is a research project for pedestrian pose and gaze estimation.  
+poze-gaze (work title) is a research project for pedestrian pose and gaze estimation.  
 It is used as a foundation for experiments in computer vision and human–computer interaction.
 
 ## Features
