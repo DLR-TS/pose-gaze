@@ -15,8 +15,8 @@ MIN_KEYPOINTS = 3
 SKIP_SECONDS = 5
 
 # Display Settings
-DISPLAY_MAX_WIDTH = 1920
-DISPLAY_MAX_HEIGHT = 1080
+DISPLAY_MAX_WIDTH = 1600
+DISPLAY_MAX_HEIGHT = 900
 DISPLAY_KEEP_ASPECT = True
 
 # Model setup
@@ -96,7 +96,7 @@ class Tracker:
 
 tracker = Tracker()
 
-# Skeleton definition (RTMPose format, 1-based)
+# Skeleton definition (RTMPose like, 1-based)
 SKELETON = [(16,14),(14,12),(17,15),(15,13),(12,13),(6,12),(7,13),(6,7),(6,8),(7,9),(8,10),(9,11),
             (2,3),(1,2),(1,3),(2,4),(3,5),(4,6),(5,7)]
 

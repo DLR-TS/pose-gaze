@@ -15,14 +15,14 @@ KPT_THRESH = 0.25
 CONF_THRESH = 0.25
 
 # Display Settings
-DISPLAY_MAX_WIDTH = 1920
-DISPLAY_MAX_HEIGHT = 1080
+DISPLAY_MAX_WIDTH = 1600
+DISPLAY_MAX_HEIGHT = 900
 DISPLAY_KEEP_ASPECT = True
 
 # Model setup
 MODEL_DIR.mkdir(exist_ok=True)
 OUTPUT_DIR.mkdir(exist_ok=True)
-MODEL_PATH = MODEL_DIR / "yolo11x-pose.pt"  # X = beste Variante (largest, most accurate)
+MODEL_PATH = MODEL_DIR / "yolo11x-pose.pt"  # X = best model (largest, most accurate)
 
 # GPU/CUDA Setup
 device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -139,7 +139,7 @@ while True:
             t_last, fps_cnt = now, 0
     
     else:
-        # Show paused frame (KORRIGIERTE EINRÜCKUNG!)
+        # Show paused frame
         if last_frame is not None:
             vis = last_frame.copy()
             cv2.putText(vis, "PAUSED - [Space] Continue", (w//2-200, h//2), 
