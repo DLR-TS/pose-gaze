@@ -1,6 +1,6 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
-  "title": "Generic ADORe Interface for object and traffic sign detection and basic data fusion",
+  "title": "General Purpose Object Detection & Description Message",
   "type": "object", "required": ["header", "objects"], "additionalProperties": true,
   "properties": {
     "header": { "type": "object", "required": ["sec", "nanosec", "frame_id"], 
