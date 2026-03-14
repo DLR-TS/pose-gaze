@@ -1,0 +1,62 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Generic ADORe Interface for object and traffic sign detection and basic data fusion",
+  "type": "object", "required": ["header", "objects"], "additionalProperties": true,
+  "properties": {
+    "header": { "type": "object", "required": ["sec", "nanosec", "frame_id"], 
+      "properties": {
+        "sec": { "type": "integer", "description": "Unix timestamp (s). E.g. 1706400000" },
+        "nanosec": { "type": "integer", "description": "Sub-second (ns). E.g. 123456789" },
+        "frame_id": { "type": "string", "description": "Coord. frame. E.g. MAP/CAMERA" }
+      }
+    },
+    "objects": { "type": "array",
+      "items": { "type": "object", "required": ["id", "class", "score", "pose", "size"],
+        "properties": {
+          "id": { "type": "integer", "description": "Tracking ID. E.g. 42" },
+          "class": { "type": "string", "description": "Object type. E.g. CAR/BUS/SIGN/UNKNOWN" },
+          "score": { "type": "number", "minimum": 0, "maximum": 1, "description": "Confidence. E.g. 0.95" },
+          "size": { "type": "object", "required": ["l", "w", "h"],
+            "properties": {
+              "l": { "type": "number", "description": "Length (m). E.g. 4.8" },
+              "w": { "type": "number", "description": "Width (m). E.g. 1.9" },
+              "h": { "type": "number", "description": "Height (m). E.g. 1.6" }
+            }
+          },
+          "pose": { "type": "object", "required": ["x", "y", "yaw"],
+            "properties": {
+              "x": { "type": "number", "description": "Forward pos (m). E.g. 10.5" },
+              "y": { "type": "number", "description": "Lateral pos (m). E.g. 2.1" },
+              "z": { "type": "number", "default": 0, "description": "Height (m). E.g. 1.5" },
+              "yaw": { "type": "number", "description": "Heading (rad). E.g. 0.1" },
+              "roll": { "type": "number", "default": 0, "description": "Roll (rad). E.g. 0.02" },
+              "pitch": { "type": "number", "default": 0, "description": "Pitch (rad). E.g. -0.05" },
+              "covariance": { "type": "array",   "minItems": 3, "maxItems": 36,
+                "description": "Pose covariance (row-major). E.g. for 2.5D with [x,y,yaw]: [0.05,0.08,0.01]"
+              }
+            }
+          },
+          "velocity": { "type": "object",
+            "properties": {
+              "vx": { "type": "number", "description": "Forward vel (m/s). E.g. 5.0" },
+              "vy": { "type": "number", "description": "Lateral vel (m/s). E.g. 0.2" },
+              "vz": { "type": "number", "default": 0, "description": "Vertical vel (m/s). E.g. 0.1" },
+              "rx": { "type": "number", "default": 0, "description": "Roll rate (rad/s). E.g. 0.01" },
+              "ry": { "type": "number", "default": 0, "description": "Pitch rate (rad/s). E.g. -0.02" },
+              "rz": { "type": "number", "default": 0, "description": "Yaw rate (rad/s). E.g. 0.3" },
+              "covariance": { "type": "array", "minItems": 3, "maxItems": 36,
+                "description": "Velocity covariance. E.g. for 2.5D with [x,y,yaw]: [0.01,0.02,0.05]"
+              }
+            }
+          },
+          "label": { "type": "object",
+            "properties": {
+              "text": { "type": "string", "description": "Sign text. E.g. 50/STOP" },
+              "value": { "type": "number", "description": "Numeric sign value. E.g. 50" }
+            }
+          }
+        }
+      }
+    }
+  }
+}
