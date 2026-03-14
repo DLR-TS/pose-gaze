@@ -6,14 +6,12 @@ from pathlib import Path
 from rtmlib import Body
 
 # Config
-INPUT_DIR = Path("media")
-INPUT_FILENAME = "test1.jpg"
-OUTPUT_FILENAME = INPUT_FILENAME.rsplit('.', 1)[0] + "_rtmpose." + INPUT_FILENAME.rsplit('.', 1)[1]
-
-# Model setup - like rtmpose_level_1.py
-SCRIPT_DIR = Path(__file__).parent.resolve()
-MODEL_DIR = SCRIPT_DIR / "models"
+ROOT_DIR = Path(__file__).parent.parent.resolve()
+INPUT_DIR = ROOT_DIR / Path("media")
+INPUT_FILENAME = "test3.jpg"
+MODEL_DIR = ROOT_DIR / Path("models")
 MODEL_DIR.mkdir(exist_ok=True)
+OUTPUT_FILENAME = INPUT_FILENAME.rsplit('.', 1)[0] + "_rtmpose." + INPUT_FILENAME.rsplit('.', 1)[1]
 
 # Force rtmlib to use local models directory
 os.environ['RTMLIB_HOME'] = str(MODEL_DIR)

@@ -7,9 +7,10 @@ from pathlib import Path
 from datetime import datetime
 
 # Config
-VIDEO_PATH = "media/test0_cut.mp4"
-MODEL_DIR = Path("models")
-OUTPUT_DIR = Path("recordings")
+ROOT_DIR = Path(__file__).parent.parent.resolve()
+VIDEO_PATH = ROOT_DIR / "media/video_1808x1392_mvBlueCOUGAR-X109b_crop205-391-2013-1783.mp4"
+MODEL_DIR = ROOT_DIR / Path("models")
+OUTPUT_DIR = ROOT_DIR / Path("recordings")
 SKIP_SECONDS = 5
 KPT_THRESH = 0.25
 CONF_THRESH = 0.25

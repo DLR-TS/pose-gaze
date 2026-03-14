@@ -8,7 +8,6 @@ from pathlib import Path
 from datetime import datetime
 
 # Config
-VIDEO_PATH = "media/test0_cut.mp4"
 CONF_THRESH = 0.5
 KPT_THRESH = 0.25
 MIN_KEYPOINTS = 3
@@ -20,10 +19,15 @@ DISPLAY_MAX_HEIGHT = 900
 DISPLAY_KEEP_ASPECT = True
 
 # Model setup
-SCRIPT_DIR = Path(__file__).parent.resolve()
-MODEL_DIR = SCRIPT_DIR / "models"
-OUTPUT_DIR = SCRIPT_DIR / "recordings"
+ROOT_DIR = Path(__file__).parent.parent.resolve()
+INPUT_DIR = ROOT_DIR / Path("media")
+
+VIDEO_PATH = INPUT_DIR / "video_1808x1392_mvBlueCOUGAR-X109b_crop205-391-2013-1783.mp4"
+
+MODEL_DIR = ROOT_DIR / Path("models")
 MODEL_DIR.mkdir(exist_ok=True)
+
+OUTPUT_DIR = ROOT_DIR / "recordings"
 OUTPUT_DIR.mkdir(exist_ok=True)
 
 os.environ['RTMLIB_HOME'] = str(MODEL_DIR)

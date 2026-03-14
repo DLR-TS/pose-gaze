@@ -4,9 +4,10 @@ import numpy as np
 from pathlib import Path
 
 # Config
-INPUT_DIR = Path("media")
+ROOT_DIR = Path(__file__).parent.parent.resolve()
+INPUT_DIR = ROOT_DIR / Path("media")
 INPUT_FILENAME = "test3.jpg"
-MODEL_DIR = Path("models")
+MODEL_DIR = ROOT_DIR / Path("models")
 MODEL_PATH = MODEL_DIR / "yolo11x-pose.pt"  # X = best model
 OUTPUT_FILENAME = INPUT_FILENAME.rsplit('.', 1)[0] + "_yolo." + INPUT_FILENAME.rsplit('.', 1)[1]
 
