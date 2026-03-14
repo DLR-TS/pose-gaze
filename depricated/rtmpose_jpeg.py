@@ -8,6 +8,7 @@ from rtmlib import Body
 # Config
 ROOT_DIR = Path(__file__).parent.parent.resolve()
 INPUT_DIR = ROOT_DIR / Path("media")
+OUTPUT_DIR = ROOT_DIR / Path("recordings")
 INPUT_FILENAME = "test3.jpg"
 MODEL_DIR = ROOT_DIR / Path("models")
 MODEL_DIR.mkdir(exist_ok=True)
@@ -81,5 +82,5 @@ if len(keypoints) > 0:
 else:
     print("WARNING: No persons detected!")
 
-cv2.imwrite(str(INPUT_DIR / OUTPUT_FILENAME), img_vis)
+cv2.imwrite(str(OUTPUT_DIR / OUTPUT_FILENAME), img_vis)
 print(f"OK: Image saved: {OUTPUT_FILENAME}")

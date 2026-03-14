@@ -9,6 +9,7 @@ INPUT_DIR = ROOT_DIR / Path("media")
 INPUT_FILENAME = "test3.jpg"
 MODEL_DIR = ROOT_DIR / Path("models")
 MODEL_PATH = MODEL_DIR / "yolo11x-pose.pt"  # X = best model
+OUTPUT_DIR = ROOT_DIR / Path("recordings")
 OUTPUT_FILENAME = INPUT_FILENAME.rsplit('.', 1)[0] + "_yolo." + INPUT_FILENAME.rsplit('.', 1)[1]
 
 # Model setup
@@ -61,5 +62,5 @@ if r.keypoints is not None and len(r.keypoints) > 0:
 else:
     print("WARNING: No persons detected!")
 
-cv2.imwrite(str(INPUT_DIR / OUTPUT_FILENAME), img_vis)
+cv2.imwrite(str(OUTPUT_DIR / OUTPUT_FILENAME), img_vis)
 print(f"OK: Image saved: {OUTPUT_FILENAME}")
