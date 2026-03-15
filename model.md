@@ -1,4 +1,4 @@
-# pose-gaze — Internal Representation for LLM Assistance
+# pose-gaze — Internal Representation
 
 ## System in One Sentence
 Reads a video file, runs RTMW3D pose estimation per frame, projects 17 joints to metric 3-D camera space via pinhole model + anthropometric scaling, tracks persons, estimates velocity via OLS regression, fits a ground plane via SVD, and renders overlays on-screen with optional MP4+NDJSON recording.
