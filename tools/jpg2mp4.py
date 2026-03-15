@@ -27,19 +27,20 @@ FRAME_START   = 0
 FRAME_END     = 469
 
 #: Path to the original (uncropped) camera-calibration JSON.
-ORIGINAL_CAMERA_JSON = PROJ_DIR / "media" / "camera_4112x2175_mvBlueCOUGAR-X109b.json"
+ORIGINAL_CAMERA_JSON = PROJ_DIR / "media" / "camera_4112x2176_mvBlueCOUGAR-X109b.json"
 
 #: Output directory for the video, JSON, and preview.
 OUTPUT_DIR = PROJ_DIR / "media"  # generated files (video, JSON, preview) go here
 
 #: Output video FPS.  None = inherit from original JSON.
-VIDEO_FPS_OVERRIDE: Optional[float] = 10.0
+VIDEO_FPS_OVERRIDE: Optional[float] = 8.0  # override original FPS (e.g. to slow down fast-motion footage for better visualization)
 
 #: Apply a sharpening kernel to each frame.
 SHARPEN = True
 
 #: Crop region as (x_start%, y_start%, x_end%, y_end%) in [0, 100].
 CROP_PERCENT: tuple = (5, 18, 49, 82)
+#CROP_PERCENT: tuple = (0, 0, 100, 100)
 
 #: Output resolution (width, height) or None for exact crop dimensions.
 TARGET_SIZE: Optional[tuple] = None
