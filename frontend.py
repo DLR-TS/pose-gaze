@@ -67,7 +67,9 @@ class LabelSmoother:
         return sum(v for _, v in buf) / len(buf)
 
 
-_label_smoother = LabelSmoother()
+_label_smoother  = LabelSmoother()
+_h_cam_ema: Optional[float] = None
+_H_CAM_EMA_ALPHA = 0.05   # ~60 frames to 95% at 13 fps
 
 
 # ── Drawing helpers ───────────────────────────────────────────────────────────
@@ -84,6 +86,7 @@ def draw_ground_plane(
     fx: float, fy: float, cx: float, cy: float,
     ds: float = 1.0,
 ) -> None:
+    global _h_cam_ema
     h_img, w_img = img.shape[:2]
     y_near = int(h_img * GROUND_PLANE_NEAR_FRAC)
     y_far  = int(h_img * GROUND_PLANE_FAR_FRAC)
@@ -132,6 +135,21 @@ def draw_ground_plane(
         xf = max(0, min(w_img-1, _x_px(x_m, z_far)))
         cv2.line(img, (xn, y_near), (xf, y_far),
                  COLOR_GROUND_LONG_LINES, lthick, cv2.LINE_AA)
+
+    # ── Camera height above ground plane ──────────────────────────────────────
+    if gp is not None and abs(float(gp.normal[1])) > 1e-3:
+        h_raw  = abs(float(np.dot(gp.normal.astype(np.float64),
+                                  gp.centroid.astype(np.float64))))
+        _h_cam_ema = (h_raw if _h_cam_ema is None
+                      else _H_CAM_EMA_ALPHA * h_raw
+                           + (1.0 - _H_CAM_EMA_ALPHA) * _h_cam_ema)
+        label = f"cam:{_h_cam_ema:.2f}m"
+        fs = LABEL_FONT_SCALE_SMALL * ds
+        (tw, th), bl = cv2.getTextSize(
+            label, cv2.FONT_HERSHEY_SIMPLEX, fs, TEXT_OUTLINE_THICKNESS + 2)
+        lx = max(2,      min(w_img - tw - 2, int(cx) + 8))
+        ly = max(th + 2, min(h_img - bl - 2, int(cy) - 8))
+        _text(img, label, (lx, ly), fs, (0, 255, 255))
 
 
 def draw_person(
@@ -227,12 +245,12 @@ def draw_person(
     sm_h    = _sm("h_m",  p.height_m)
     sm_spd  = round(_sm("spd", spd_raw) * 2) / 2
 
-    _text(img, f"#{p.person_id}  {conf:.0%}",  (ax, ay),       fs, COLOR_LABEL_GAZE)
-    _text(img, gaze_label,                      (ax, ay - g),   fs, COLOR_LABEL_GAZE)
-    _text(img, f"ver:{sm_elev:+.1f}",           (ax, ay - 2*g), fs, COLOR_LABEL_ANGLES)
-    _text(img, f"hor:{sm_azim:+.1f}",           (ax, ay - 3*g), fs, COLOR_LABEL_ANGLES)
-    _text(img, f"spd:{sm_spd:.1f}km/h",         (ax, ay - 4*g), fs, COLOR_LABEL_ANGLES)
-    _text(img, f"H:{sm_h*100:.0f}cm",           (ax, ay - 5*g), fs, COLOR_LABEL_DIST)
+    _text(img, f"#{p.person_id}  {conf:.0%}", (ax, ay),       fs, COLOR_LABEL_GAZE)
+    _text(img, gaze_label,                    (ax, ay - g),   fs, COLOR_LABEL_GAZE)
+    _text(img, f"ver:{sm_elev:+.1f}",         (ax, ay - 2*g), fs, COLOR_LABEL_ANGLES)
+    _text(img, f"hor:{sm_azim:+.1f}",         (ax, ay - 3*g), fs, COLOR_LABEL_ANGLES)
+    _text(img, f"spd:{sm_spd:.1f}km/h",       (ax, ay - 4*g), fs, COLOR_LABEL_ANGLES)
+    _text(img, f"H:{sm_h*100:.0f}cm",         (ax, ay - 5*g), fs, COLOR_LABEL_DIST)
 
 
 def draw_hud(img, n, t_s, total_s, rec, paused,

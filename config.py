@@ -11,7 +11,7 @@ MODEL_DIR       = SCRIPT_DIR / "models"
 OUTPUT_DIR      = SCRIPT_DIR / "recordings"
 CAMERA_JSON_DIR: Path = SCRIPT_DIR / "media"
 
-VIDEO_PATH   = "media/video_1808x1392_mvBlueCOUGAR-X109b_crop205-391-2013-1783.mp4"
+VIDEO_PATH   = "media/video_4112x2176_mvBlueCOUGAR-X109b_crop0-0-4112-2176.mp4"
 FPS_FALLBACK = 13.2
 
 K_FALLBACK = np.array(
@@ -21,8 +21,8 @@ K_FALLBACK = np.array(
 MIN_KEYPOINT_CONFIDENCE       = 0.25
 MIN_VISIBLE_KEYPOINTS         = 6
 MIN_PIXEL_HEIGHT_SPAN         = 5.0
-DETECTION_SCORE_THRESHOLD     = 0.30
-MIN_DETECTION_MEAN_CONFIDENCE = 0.20
+DETECTION_SCORE_THRESHOLD     = 0.50
+MIN_DETECTION_MEAN_CONFIDENCE = 0.50
 
 # ── Tracker ───────────────────────────────────────────────────────────────────
 TRACKER_IOU_THRESHOLD        = 0.25
