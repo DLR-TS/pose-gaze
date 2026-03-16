@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional, List
 
-from config import (
+from basics import (
     SCRIPT_DIR, MODEL_DIR, CAMERA_JSON_DIR, K_FALLBACK,
     MIN_KEYPOINT_CONFIDENCE, MIN_VISIBLE_KEYPOINTS, MIN_DETECTION_MEAN_CONFIDENCE,
     BODY_HEIGHT_PRIOR_M, EMA_ALPHA_PIXEL_HEIGHT, EMA_ALPHA_DISPLAY,

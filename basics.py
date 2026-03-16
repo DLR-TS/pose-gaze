@@ -1,4 +1,4 @@
-"""config.py – single source of truth for all constants and shared data types."""
+"""basics.py – single source of truth for all constants and shared data types."""
 from pathlib import Path
 from dataclasses import dataclass, field, asdict
 from typing import Optional, List
@@ -11,7 +11,7 @@ MODEL_DIR       = SCRIPT_DIR / "models"
 OUTPUT_DIR      = SCRIPT_DIR / "recordings"
 CAMERA_JSON_DIR: Path = SCRIPT_DIR / "media"
 
-VIDEO_PATH   = "media/video_4112x2176_mvBlueCOUGAR-X109b_crop0-0-4112-2176.mp4"
+VIDEO_PATH   = CAMERA_JSON_DIR / "video_1808x1392_mvBlueCOUGAR-X109b_crop205-391-2013-1783.mp4"
 FPS_FALLBACK = 13.2
 
 K_FALLBACK = np.array(

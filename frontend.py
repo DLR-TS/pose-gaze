@@ -21,7 +21,7 @@ from backend import (
     PersonData, proj3d2d, gaze_angles_3d,
     get_ground_plane,
 )
-from config import (
+from basics import (
     VIDEO_PATH, OUTPUT_DIR, FPS_FALLBACK, SEEK_STEP_SECONDS,
     DISPLAY_MAX_WIDTH_PX, DISPLAY_MAX_HEIGHT_PX,
     JOINT_NOSE, JOINT_LEFT_EAR, JOINT_RIGHT_EAR,
