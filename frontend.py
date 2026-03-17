@@ -13,45 +13,18 @@ from typing import Optional
 import cv2
 import numpy as np
 
-from backend import (
-    DEVICE,
-    init_camera, process_frame,
-    build_detection_message,
-    PersonData, proj3d2d, gaze_angles_3d,
-    get_ground_plane,
-)
-
-from basics import (
-    VIDEO_PATH, OUTPUT_DIR, FPS_FALLBACK, SEEK_STEP_SECONDS,
-    DISPLAY_MAX_WIDTH_PX, DISPLAY_MAX_HEIGHT_PX,
-    JOINT_NOSE, JOINT_LEFT_EAR, JOINT_RIGHT_EAR,
-    COLOR_HUD_RECORDING, COLOR_HUD_PAUSED, COLOR_HUD_RUNNING,
-    COLOR_HUD_CAM_INFO, COLOR_HUD_HINT,
-    COLOR_LABEL_DIST, COLOR_LABEL_ANGLES, COLOR_LABEL_GAZE,
-    COLOR_KEYPOINT_NOSE, COLOR_KEYPOINT_EAR, COLOR_KEYPOINT_OTHER,
-    COLOR_EAR_CONNECTOR, COLOR_GAZE_ORIGIN_DOT, COLOR_GAZE_LINE, COLOR_GAZE_ENDPOINT,
-    COLOR_BEARING_RAY, COLOR_GROUND_LONG_LINES,
-    SKELETON_EDGES, SKELETON_EDGE_COLORS,
-    SKELETON_LINE_THICKNESS, GAZE_LINE_THICKNESS, TEXT_OUTLINE_THICKNESS,
-    LABEL_FONT_SCALE_SMALL,
-    HUD_FONT_SCALE_STATUS, HUD_FONT_SCALE_CAM,
-    BEARING_RAY_THICKNESS, BEARING_ENDPOINT_COLOR, BEARING_ENDPOINT_RADIUS,
-    GAZE_RAY_LENGTH_M,
-    GAZE_ORIGIN_DOT_RADIUS, GAZE_ENDPOINT_RADIUS, KEYPOINT_RADIUS,
-    LABEL_LINE_SPACING_PX,
-    TAU_CAM_HEIGHT_S,
-    GROUND_PLANE_ENABLED, GROUND_PLANE_MAX_DEPTH_M, GROUND_PLANE_LINE_THICKNESS,
-    GROUND_PLANE_FILL_ALPHA, COLOR_GROUND_PLANE_FILL,
-    GROUND_PLANE_X_STEP_M, GROUND_PLANE_X_HALF_M,
-    GROUND_PLANE_NEAR_FRAC, GROUND_PLANE_FAR_FRAC,
-    GroundPlane,
-)
+from basics import *  # noqa: F401,F403
+import backend
 
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
-# ── Camera-height EMA state ───────────────────────────────────────────────────
-_h_cam_ema:    Optional[float] = None
-_h_cam_last_t: Optional[float] = None
+# grid x-positions for ground plane overlay; constant for given config
+_GRID_X_VALUES = np.arange(
+    -GROUND_PLANE_X_HALF_M,
+     GROUND_PLANE_X_HALF_M + 1e-9,
+     GROUND_PLANE_X_STEP_M,
+)
+
 
 # ── Drawing helpers ───────────────────────────────────────────────────────────
 def _text(img: np.ndarray, text: str, pos: tuple,
@@ -69,23 +42,27 @@ def draw_ground_plane(
         fy:          float,
         cx:          float,
         cy:          float,
+        cam_height:  CamHeightEMA,
         ds:          float = 1.0,
         timestamp_s: float = 0.0,
 ) -> None:
-    global _h_cam_ema, _h_cam_last_t
     h_img, w_img = img.shape[:2]
     y_near = int(h_img * GROUND_PLANE_NEAR_FRAC)
     y_far  = int(h_img * GROUND_PLANE_FAR_FRAC)
 
+    # cache plane coefficients once for both near/far row queries
+    _gp_valid = gp is not None and abs(float(gp.normal[1])) >= GROUND_PLANE_NORMAL_MIN_Y
+    if _gp_valid:
+        _n  = gp.normal.astype(np.float64)
+        _c  = gp.centroid.astype(np.float64)
+        _d  = -float(np.dot(_n, _c))
+
     def _row_to_z(y_px: float) -> float:
-        if gp is not None and abs(float(gp.normal[1])) > 1e-3:
-            n = gp.normal.astype(np.float64)
-            c = gp.centroid.astype(np.float64)
-            d = -float(np.dot(n, c))
+        if _gp_valid:
             ray   = np.array([0., (y_px - cy) / fy, 1.0])
-            denom = float(np.dot(n, ray))
+            denom = float(np.dot(_n, ray))
             if abs(denom) > 1e-6:
-                t = -d / denom
+                t = -_d / denom
                 if t > 0.01:
                     return float(t)
         dy = y_px - cy
@@ -115,25 +92,23 @@ def draw_ground_plane(
     cv2.addWeighted(overlay, GROUND_PLANE_FILL_ALPHA,
                     img, 1.0 - GROUND_PLANE_FILL_ALPHA, 0, img)
 
-    lthick = max(1, round(GROUND_PLANE_LINE_THICKNESS * ds))
-    for x_m in np.arange(-x_half, x_half + 1e-9, GROUND_PLANE_X_STEP_M):
-        xn = max(0, min(w_img-1, _x_px(x_m, z_near)))
-        xf = max(0, min(w_img-1, _x_px(x_m, z_far)))
-        cv2.line(img, (xn, y_near), (xf, y_far),
-                 COLOR_GROUND_LONG_LINES, lthick, cv2.LINE_AA)
+    # draw grid lines only when ground plane is fitted and reliable
+    _gp_ok = _gp_valid and gp.inlier_ratio > 0.3
+    if _gp_ok:
+        lthick = max(1, round(GROUND_PLANE_LINE_THICKNESS * ds))
+        for x_m in _GRID_X_VALUES:
+            xn = max(0, min(w_img-1, _x_px(x_m, z_near)))
+            xf = max(0, min(w_img-1, _x_px(x_m, z_far)))
+            cv2.line(img, (xn, y_near), (xf, y_far),
+                     COLOR_GROUND_LONG_LINES, lthick, cv2.LINE_AA)
 
-    if gp is not None and abs(float(gp.normal[1])) > 1e-3:
-        h_raw = abs(float(np.dot(gp.normal.astype(np.float64),
-                                 gp.centroid.astype(np.float64))))
-        if _h_cam_ema is None or _h_cam_last_t is None:
-            _h_cam_ema = h_raw
+    if _gp_valid:
+        h_raw = abs(float(np.dot(_n, _c)))
+        cam_height.update(h_raw, timestamp_s)
+        if cam_height.value is not None:
+            label = f"cam:{cam_height.value:.2f}m"
         else:
-            dt         = max(0.0, timestamp_s - _h_cam_last_t)
-            alpha      = 1.0 - math.exp(-dt / TAU_CAM_HEIGHT_S) if dt > 1e-4 else 0.0
-            _h_cam_ema = alpha * h_raw + (1.0 - alpha) * _h_cam_ema
-        _h_cam_last_t = timestamp_s
-
-        label = f"cam:{_h_cam_ema:.2f}m"
+            label = "cam:---"
         fs    = LABEL_FONT_SCALE_SMALL * ds
         (tw, th), bl = cv2.getTextSize(
             label, cv2.FONT_HERSHEY_SIMPLEX, fs, TEXT_OUTLINE_THICKNESS + 2)
@@ -148,8 +123,10 @@ def draw_person(
         fx:  float, fy: float, cx: float, cy: float,
         ds:  float = 1.0,
 ) -> None:
+    vis = p.joint_visible
+    if vis is None or not vis.any():
+        return
     jm     = p.joints_meters
-    vis    = p.joint_visible
     safe_d = np.where(vis, jm[:, 2], 1.0)
     px_x   = ((jm[:, 0] / safe_d) * fx + cx).astype(np.int32)
     px_y   = ((jm[:, 1] / safe_d) * fy + cy).astype(np.int32)
@@ -213,9 +190,6 @@ def draw_person(
                    COLOR_KEYPOINT_OTHER)
             cv2.circle(img, (px_x[j], px_y[j]), kr, col, -1)
 
-    if not vis.any():
-        return
-
     vi  = np.where(vis)[0]
     top = vi[px_y[vi].argmin()]
     g   = round(LABEL_LINE_SPACING_PX * ds)
@@ -255,15 +229,12 @@ def draw_hud(img, n, t_s, total_s, rec, paused,
 
 
 def _stop_rec(vw, nw, vp, np_) -> tuple:
-    if vw is not None:
-        vw.release()
-        if vp is not None: print(f"Saved video  : {vp}")
+    if vw is not None: vw.release()
+    if vp is not None: print(f"Saved video  : {vp}")
     if nw is not None:
         nw.close()
         if np_ is not None: print(f"Saved NDJSON : {np_}")
-    return None, None
-
-
+    return None, None, None
 def main() -> None:
     cap = cv2.VideoCapture(VIDEO_PATH)
     if not cap.isOpened():
@@ -275,13 +246,15 @@ def main() -> None:
     total_s  = n_frames / fps
     print(f"Video : {fw}x{fh} {fps:.1f}fps {total_s:.1f}s ({n_frames} frames)")
 
-    cam             = init_camera(fw, fh, fps)
+    cam             = backend.init_camera(fw, fh, fps)
     fx, fy, cx, cy  = cam["FX"], cam["FY"], cam["CX"], cam["CY"]
-    _ds_raw         = math.sqrt(fw * fh / (1808.0 * 1392.0))
+    _ds_raw         = math.sqrt(fw * fh / (DISPLAY_DS_REFERENCE_PX[0] * DISPLAY_DS_REFERENCE_PX[1]))
     ds              = 1.0 + (_ds_raw - 1.0) * 0.6
     scale           = min(DISPLAY_MAX_WIDTH_PX / fw, DISPLAY_MAX_HEIGHT_PX / fh, 1.0)
     dw, dh          = int(fw * scale), int(fh * scale)
 
+    cam_height      = CamHeightEMA()
+    _frame_ms       = max(1, int(1000 / fps))
     paused, rec     = False, False
     vw = nw = vp = np_ = None
     cur_frame = fps_cnt = 0
@@ -298,34 +271,38 @@ def main() -> None:
             ok, frame = cap.read()
             if not ok:
                 print("End of video.")
-                vw, nw = _stop_rec(vw, nw, vp, np_)
+                if rec:
+                    rec = False
+                    vw, nw, vp = _stop_rec(vw, nw, vp, np_)
+                    np_ = None
                 paused = True; continue
             cur_frame = int(cap.get(cv2.CAP_PROP_POS_FRAMES))
             t_s       = cur_frame / fps
-            persons   = process_frame(frame, t_s)
-            fps_cnt  += 1
+            _t0          = time.time()
+            persons      = backend.process_frame(frame, t_s)
+            inference_ms = max(1, int((time.time() - _t0) * 1000))
+            fps_cnt     += 1
             now       = time.time()
-            if now - fps_t0 >= 1.0:
+            if now - fps_t0 >= 5.0:
                 print(f"FPS:{fps_cnt/(now-fps_t0):.1f} frame:{cur_frame}/{n_frames}"
                       f" t:{t_s:.1f}s persons:{len(persons)} {DEVICE.upper()}")
                 fps_t0, fps_cnt = now, 0
 
-        if paused and last_canvas is not None:
-            canvas = last_canvas.copy()
-        elif paused:
-            canvas = np.zeros((fh, fw, 3), dtype=np.uint8)
+        if paused:
+            # paused: display last rendered frame unchanged
+            canvas = (last_canvas.copy()
+                      if last_canvas is not None
+                      else np.zeros((fh, fw, 3), dtype=np.uint8))
         else:
             canvas = frame.copy()
+            if GROUND_PLANE_ENABLED:
+                draw_ground_plane(canvas, backend.get_ground_plane(),
+                                  fx, fy, cx, cy, cam_height, ds, t_s)
+            for p in persons:
+                draw_person(canvas, p, fx, fy, cx, cy, ds)
+            last_canvas = canvas
 
-        if GROUND_PLANE_ENABLED:
-            draw_ground_plane(canvas, get_ground_plane(), fx, fy, cx, cy, ds, t_s)
-
-        for p in persons:
-            draw_person(canvas, p, fx, fy, cx, cy, ds)
-
-        last_canvas = canvas
-
-        draw_hud(canvas, 0 if paused else len(persons),
+        draw_hud(canvas, len(persons),
                  cur_frame / fps, total_s, rec, paused, cam["source"], fh, ds)
 
         if rec:
@@ -336,10 +313,12 @@ def main() -> None:
         disp = cv2.resize(canvas, (dw, dh),
                           interpolation=cv2.INTER_AREA) if scale < 1.0 else canvas
         cv2.imshow("RTMPose 3D", disp)
-        key = cv2.waitKey(100 if paused else 1) & 0xFF
+        _wait = max(1, _frame_ms - inference_ms) if not paused else 100
+        key = cv2.waitKey(_wait) & 0xFF
 
         if key in (ord("q"), 27):
-            vw, nw = _stop_rec(vw, nw, vp, np_); break
+            vw, nw, vp = _stop_rec(vw, nw, vp, np_)
+            np_ = None; break
         elif key == ord(" "):
             paused = not paused
         elif key == ord("r"):
@@ -350,9 +329,12 @@ def main() -> None:
                 np_ = OUTPUT_DIR / f"rec_{ts}.ndjson"
                 vw  = cv2.VideoWriter(str(vp), cv2.VideoWriter_fourcc(*"mp4v"), fps, (fw, fh))
                 nw  = open(np_, "w", encoding="utf-8")
-                print(f"Recording : {vp}"); print(f"Messages  : {np_}")
+                print(f"Recording  : {vp}")
+                print(f"Messages   : {np_}")
             else:
-                rec = False; vw, nw = _stop_rec(vw, nw, vp, np_)
+                rec = False
+                vw, nw, vp = _stop_rec(vw, nw, vp, np_)
+                np_ = None
         elif key == ord("a"):
             cap.set(cv2.CAP_PROP_POS_FRAMES,
                     max(0, cap.get(cv2.CAP_PROP_POS_FRAMES) - SEEK_STEP_SECONDS * fps))

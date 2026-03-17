@@ -11,37 +11,12 @@ import cv2
 import numpy as np
 import onnxruntime as ort
 from collections import deque
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional, List, Tuple
 
 from scipy.optimize import linear_sum_assignment
 
-from basics import (
-    SCRIPT_DIR, MODEL_DIR, CAMERA_JSON_DIR, K_FALLBACK,
-    MIN_KEYPOINT_CONFIDENCE, MIN_VISIBLE_KEYPOINTS, MIN_DETECTION_MEAN_CONFIDENCE,
-    BODY_HEIGHT_PRIOR_M, TAU_PIXEL_HEIGHT_S, TAU_DISPLAY_S,
-    DETECTION_SCORE_THRESHOLD,
-    JOINT_NOSE, JOINT_LEFT_EAR, JOINT_RIGHT_EAR,
-    JOINT_LEFT_HIP, JOINT_RIGHT_HIP,
-    JOINT_LEFT_SHOULDER, JOINT_RIGHT_SHOULDER,
-    TRACKER_IOU_THRESHOLD, TRACKER_MAX_INACTIVE_FRAMES, TRACKER_MIN_HIT_STREAK,
-    TRACKER_CENTROID_DIST_NORM, TRACKER_CENTROID_DIST_WEIGHT,
-    HEIGHT_BUFFER_WINDOW_FRAMES, HEIGHT_BUFFER_MIN_SAMPLES, HEIGHT_OUTLIER_MAX_DEVIATION,
-    BODY_HEIGHT_MIN_M, BODY_HEIGHT_MAX_M,
-    RTMW3D_HEAD_ANKLE_Z_RATIO, JOINT_DEPTH_MIN_M, JOINT_DEPTH_MAX_M,
-    VISIBLE_BODY_RATIO_ANKLES, VISIBLE_BODY_RATIO_KNEES, VISIBLE_BODY_RATIO_HIPS,
-    MIN_PIXEL_HEIGHT_SPAN, DE_LEVA_SEGMENTS,
-    VELOCITY_EMA_TAU_S, VELOCITY_BUFFER_S, VELOCITY_MIN_SPAN_S,
-    VELOCITY_MAX_DT_S, VELOCITY_MAX_SPEED_MS, VELOCITY_BUFFER_SIZE,
-    GROUND_PLANE_ENABLED, GROUND_PLANE_SAMPLE_INTERVAL_S,
-    GROUND_PLANE_SAMPLE_BUFFER, GROUND_PLANE_MIN_SAMPLES,
-    GROUND_PLANE_RANSAC_ITERATIONS, GROUND_PLANE_RANSAC_INLIER_DIST,
-    GROUND_PLANE_TEMPORAL_DECAY_S,
-    GroundPlane,
-    MessageHeader, ObjectSize, ObjectPose, ObjectVelocity, ObjectLabel,
-    DetectedObject, DetectionMessage,
-)
+from basics import *  # noqa: F401,F403
 
 # ── Environment ───────────────────────────────────────────────────────────────
 MODEL_DIR.mkdir(parents=True, exist_ok=True)
@@ -52,39 +27,40 @@ for _k, _v in [("RTMLIB_HOME",          str(MODEL_DIR)),
     os.environ[_k] = _v
 ort.set_default_logger_severity(4)
 
-try:
-    import torch as _torch
-    DEVICE = "cuda" if _torch.cuda.is_available() else "cpu"
-except Exception:
-    DEVICE = "cpu"
 print(f"Backend : {DEVICE.upper()}")
 
 from rtmlib import Wholebody3d
-_inference_model = Wholebody3d(mode="balanced", backend="onnxruntime", device=DEVICE)
-_inference_model.det_model.score_thr = DETECTION_SCORE_THRESHOLD
-print(f"Backend : YOLOX score_thr -> {DETECTION_SCORE_THRESHOLD:.2f}")
+_inference_model: Optional["Wholebody3d"] = None  # lazy-initialised in init_inference()
 
+
+def init_inference() -> None:
+    """Load detection + pose models. Called once from init_camera().
+    Safe to call multiple times; no-op if already initialised.
+    """
+    global _inference_model
+    if _inference_model is not None:
+        return
+    _inference_model = Wholebody3d(mode="balanced", backend="onnxruntime", device=DEVICE)
+    _inference_model.det_model.score_thr = DETECTION_SCORE_THRESHOLD
+    print(f"Backend : YOLOX score_thr -> {DETECTION_SCORE_THRESHOLD:.2f}")
+
+# precomputed index/ratio arrays for vectorised De Leva segment calculations
 _DELEVA_JOINT_A = np.array([seg[0] for seg in DE_LEVA_SEGMENTS], dtype=np.int32)
 _DELEVA_JOINT_B = np.array([seg[1] for seg in DE_LEVA_SEGMENTS], dtype=np.int32)
 _DELEVA_RATIO   = np.array([seg[2] for seg in DE_LEVA_SEGMENTS], dtype=np.float32)
-_TORSO_JOINTS   = [JOINT_LEFT_SHOULDER, JOINT_RIGHT_SHOULDER,
-                   JOINT_LEFT_HIP,      JOINT_RIGHT_HIP]
+_TORSO_JOINTS   = (JOINT_LEFT_SHOULDER, JOINT_RIGHT_SHOULDER,
+                   JOINT_LEFT_HIP,      JOINT_RIGHT_HIP)
+_JOINT_HEAD     = (JOINT_NOSE, JOINT_LEFT_EYE, JOINT_RIGHT_EYE,
+                   JOINT_LEFT_EAR, JOINT_RIGHT_EAR)
+_JOINT_ANKLES   = (JOINT_LEFT_ANKLE, JOINT_RIGHT_ANKLE)
+_JOINT_KNEES    = (JOINT_LEFT_KNEE,  JOINT_RIGHT_KNEE)
+_JOINT_HIPS     = (JOINT_LEFT_HIP,   JOINT_RIGHT_HIP)
 
-# ── Data structure ────────────────────────────────────────────────────────────
-@dataclass
-class PersonData:
-    person_id:        int
-    pixel_coords:     np.ndarray
-    joint_scores:     np.ndarray
-    joints_meters:    np.ndarray
-    distance_m:       float
-    elevation_deg:    float
-    azimuth_deg:      float
-    height_m:         float
-    gaze_origin_m:    Optional[np.ndarray]
-    gaze_direction:   Optional[np.ndarray]
-    joint_visible:    np.ndarray               = None
-    velocity_m_per_s: Optional[ObjectVelocity] = None
+
+def _vis_joints(scores: np.ndarray, indices: list) -> list:
+    """Return indices from `indices` where score exceeds MIN_KEYPOINT_CONFIDENCE."""
+    return [j for j in indices if scores[j] > MIN_KEYPOINT_CONFIDENCE]
+
 
 # ── Camera helpers ────────────────────────────────────────────────────────────
 def _camera_search_dirs(search_dir: Path):
@@ -150,7 +126,7 @@ def _find_scalable_params(frame_width: int, frame_height: int,
                     "K": np.array([[float(ci["FX"]) * sx, 0., float(ci["CX"]) * sx],
                                    [0., float(ci["FY"]) * sy, float(ci["CY"]) * sy],
                                    [0., 0., 1.]], dtype=np.float64),
-                    "D":      np.zeros(5, dtype=np.float64),
+                    "D": np.array(ci.get("D", [0, 0, 0, 0, 0]), dtype=np.float64),
                     "source": (f"{candidate.name} "
                                f"[scaled {jw}x{jh}->{frame_width}x{frame_height}]"),
                     "crop": None,
@@ -198,8 +174,6 @@ def _undistort_keypoints(pixel_coords: np.ndarray,
     return out.reshape(-1, 2).astype(np.float32)
 
 # ── Tracker ───────────────────────────────────────────────────────────────────
-_MATCH_GATE = 0.99
-
 class PersonTracker:
     """IoU + centroid-distance tracker with Hungarian assignment.
 
@@ -261,7 +235,7 @@ class PersonTracker:
                         cost[i, j] = -score
             row_ind, col_ind = linear_sum_assignment(cost)
             for i, j in zip(row_ind, col_ind):
-                if cost[i, j] >= _MATCH_GATE:
+                if cost[i, j] >= TRACKER_MATCH_GATE:
                     continue
                 pid = existing_ids[i]
                 self._tracks[pid].update(
@@ -292,10 +266,13 @@ class PersonProfiles:
         self._height_history:   dict = {}
         self._pixel_height_ema: dict = {}
         self._pixel_height_t:   dict = {}
+        self._z_root_ema:       dict = {}
+        self._z_root_t:         dict = {}
         self._display_ema:      dict = {}
         self._display_t:        dict = {}
         self._pos_history:      dict = {}
         self._vel_ema:          dict = {}
+        self._height_published: dict = {}  # pid → (last_t, value)
 
     def push_height_sample(self, person_id: int, height_m: float,
                            head_visible: bool, ankle_visible: bool) -> None:
@@ -315,6 +292,17 @@ class PersonProfiles:
         return (float(np.median(history))
                 if len(history) >= HEIGHT_BUFFER_MIN_SAMPLES
                 else BODY_HEIGHT_PRIOR_M)
+
+    def get_published_height(self, person_id: int, timestamp_s: float) -> float:
+        """Return the height reference throttled to HEIGHT_PUBLISH_INTERVAL_S.
+        Internal depth anchor always uses get_height_reference() directly.
+        """
+        current = self.get_height_reference(person_id)
+        cached  = self._height_published.get(person_id)
+        if cached is None or timestamp_s - cached[0] >= HEIGHT_PUBLISH_INTERVAL_S:
+            self._height_published[person_id] = (timestamp_s, current)
+            return current
+        return cached[1]
 
     def smooth_pixel_height(self, person_id: int,
                             pixel_height: float,
@@ -336,26 +324,39 @@ class PersonProfiles:
                               distance_m:    float,
                               elevation_deg: float,
                               azimuth_deg:   float,
-                              height_m:      float,
                               timestamp_s:   float) -> tuple:
         last_t = self._display_t.get(person_id)
         if person_id not in self._display_ema or last_t is None:
-            self._display_ema[person_id] = (distance_m, elevation_deg,
-                                            azimuth_deg, height_m)
+            self._display_ema[person_id] = (distance_m, elevation_deg, azimuth_deg)
             self._display_t[person_id]   = timestamp_s
-            return distance_m, elevation_deg, azimuth_deg, height_m
+            return distance_m, elevation_deg, azimuth_deg
         dt    = max(0.0, timestamp_s - last_t)
         alpha = 1.0 - math.exp(-dt / TAU_DISPLAY_S) if dt > 1e-4 else 0.0
-        pd, pe, pa, ph = self._display_ema[person_id]
+        pd, pe, pa = self._display_ema[person_id]
         delta = azimuth_deg - pa
         if   delta >  180.: azimuth_deg -= 360.
         elif delta < -180.: azimuth_deg += 360.
         smoothed = (alpha * distance_m    + (1.0 - alpha) * pd,
                     alpha * elevation_deg + (1.0 - alpha) * pe,
-                    alpha * azimuth_deg   + (1.0 - alpha) * pa,
-                    alpha * height_m      + (1.0 - alpha) * ph)
+                    alpha * azimuth_deg   + (1.0 - alpha) * pa)
         self._display_ema[person_id] = smoothed
         self._display_t[person_id]   = timestamp_s
+        return smoothed
+
+    def smooth_z_root(self, person_id: int,
+                      z_root: float,
+                      timestamp_s: float) -> float:
+        prev   = self._z_root_ema.get(person_id)
+        last_t = self._z_root_t.get(person_id)
+        if prev is None or last_t is None:
+            self._z_root_ema[person_id] = z_root
+            self._z_root_t[person_id]   = timestamp_s
+            return z_root
+        dt      = max(0.0, timestamp_s - last_t)
+        alpha   = 1.0 - math.exp(-dt / TAU_Z_ROOT_S) if dt > 1e-4 else 0.0
+        smoothed = alpha * z_root + (1.0 - alpha) * prev
+        self._z_root_ema[person_id] = smoothed
+        self._z_root_t[person_id]   = timestamp_s
         return smoothed
 
     def compute_velocity(self, person_id: int,
@@ -392,6 +393,7 @@ class PersonProfiles:
         else:
             ema = raw.copy()
         self._vel_ema[person_id] = ema
+        # Axis mapping: ema=[X_cam, Y_cam, Z_cam]; Z_cam=fwd, X_cam=right, -Y_cam=up
         return ObjectVelocity(vx=float(ema[2]),
                               vy=float(ema[0]),
                               vz=float(-ema[1]))
@@ -401,13 +403,13 @@ def _pixel_body_height_span(pixel_coords, joint_scores) -> Optional[float]:
     """Vertical pixel span from the topmost confident head joint to the lowest
     confident ankle/knee/hip joint.  Operates on undistorted coordinates."""
     top_y = None
-    for group in ([0], [1, 2], [3, 4]):
+    for group in ((JOINT_NOSE,), (JOINT_LEFT_EYE, JOINT_RIGHT_EYE), (JOINT_LEFT_EAR, JOINT_RIGHT_EAR)):
         ys = [float(pixel_coords[j, 1])
               for j in group if joint_scores[j] > MIN_KEYPOINT_CONFIDENCE]
         if ys:
             top_y = float(np.mean(ys)); break
     bot_y = None
-    for group in ([15, 16], [13, 14], [11, 12]):
+    for group in (_JOINT_ANKLES, _JOINT_KNEES, _JOINT_HIPS):
         ys = [float(pixel_coords[j, 1])
               for j in group if joint_scores[j] > MIN_KEYPOINT_CONFIDENCE]
         if ys:
@@ -435,14 +437,13 @@ def compute_3d_pose(pixel_coords, kp3d_normalized, joint_scores,
     wt = float(cp[valid].sum())
     if wt < 1e-6:
         return None, 0., None, None
+    # u2m: metres-per-normalised-unit; maps model z-span to real-world depth
     u2m = float((_DELEVA_RATIO[valid]
                  * (BODY_HEIGHT_PRIOR_M / span[valid])
                  * cp[valid]).sum() / wt)
 
-    def _vis(idx): return [j for j in idx if joint_scores[j] > MIN_KEYPOINT_CONFIDENCE]
-
-    head_joints  = _vis([0, 1, 2, 3, 4])
-    ankle_joints = _vis([15, 16])
+    head_joints  = _vis_joints(joint_scores, _JOINT_HEAD)
+    ankle_joints = _vis_joints(joint_scores, _JOINT_ANKLES)
 
     measured_height_m = 0.
     if head_joints and ankle_joints:
@@ -458,15 +459,16 @@ def compute_3d_pose(pixel_coords, kp3d_normalized, joint_scores,
     if pixel_height is None or pixel_height < MIN_PIXEL_HEIGHT_SPAN:
         return None, 0., None, None
 
-    foot_joints = _vis([15, 16, 13, 14, 11, 12])
+    knee_joints = _vis_joints(joint_scores, _JOINT_KNEES)
+    hip_joints  = _vis_joints(joint_scores, _JOINT_HIPS)
+    foot_joints = ankle_joints or knee_joints or hip_joints
     if not head_joints or not foot_joints:
         return None, 0., None, None
 
-    visible_body_ratio = (VISIBLE_BODY_RATIO_ANKLES
-                          if any(j in foot_joints for j in [15, 16]) else
-                          VISIBLE_BODY_RATIO_HIPS
-                          if any(j in foot_joints for j in [11, 12]) else
+    visible_body_ratio = (VISIBLE_BODY_RATIO_ANKLES if ankle_joints else
+                          VISIBLE_BODY_RATIO_HIPS   if hip_joints   else
                           VISIBLE_BODY_RATIO_KNEES)
+    # depth anchor: pinhole inverse – how far away is a body of this pixel height?
     z_root = focal_y * height_reference_m * visible_body_ratio / pixel_height
 
     depth  = np.clip(z_root + kp3d_normalized[:17, 2] * u2m,
@@ -476,7 +478,7 @@ def compute_3d_pose(pixel_coords, kp3d_normalized, joint_scores,
     jm[:, 0] = (pixel_coords[:, 0] - principal_x) * depth / focal_x
     jm[:, 1] = (pixel_coords[:, 1] - principal_y) * depth / focal_y
 
-    torso_vis   = [j for j in _TORSO_JOINTS if joint_scores[j] > MIN_KEYPOINT_CONFIDENCE]
+    torso_vis   = _vis_joints(joint_scores, _TORSO_JOINTS)
     centroid_3d = (jm[torso_vis].mean(axis=0) if len(torso_vis) >= 2
                    else jm[joint_scores[:17] > MIN_KEYPOINT_CONFIDENCE].mean(axis=0))
 
@@ -489,14 +491,6 @@ def compute_3d_pose(pixel_coords, kp3d_normalized, joint_scores,
              math.degrees(math.atan2(-float(centroid_3d[1]), hd)),
              math.degrees(math.atan2( float(centroid_3d[0]), float(centroid_3d[2])))))
 
-
-def proj3d2d(point_3d, focal_x, focal_y,
-             principal_x, principal_y) -> Optional[np.ndarray]:
-    if point_3d[2] <= 0.:
-        return None
-    return np.array([point_3d[0] / point_3d[2] * focal_x + principal_x,
-                     point_3d[1] / point_3d[2] * focal_y + principal_y],
-                    dtype=np.float32)
 
 
 # ── Gaze ──────────────────────────────────────────────────────────────────────
@@ -519,12 +513,6 @@ def compute_gaze_ray_3d(joints_meters: np.ndarray,
             (gaze_vec / length).astype(np.float32))
 
 
-def gaze_angles_3d(gaze_unit_dir) -> tuple:
-    """Return (azimuth_deg, elevation_deg) for a unit gaze direction vector."""
-    h = math.hypot(float(gaze_unit_dir[0]), float(gaze_unit_dir[2]))
-    return (math.degrees(math.atan2( float(gaze_unit_dir[0]), float(gaze_unit_dir[2]))),
-            math.degrees(math.atan2(-float(gaze_unit_dir[1]), h)))
-
 
 # ── Module state ──────────────────────────────────────────────────────────────
 _tracker        = PersonTracker()
@@ -534,8 +522,9 @@ _camera_params: Optional[dict] = None
 # ── Ground plane ──────────────────────────────────────────────────────────────
 _ground_ref_buf: deque                 = deque(maxlen=GROUND_PLANE_SAMPLE_BUFFER)
 _last_ground_t:  float                 = -GROUND_PLANE_SAMPLE_INTERVAL_S
+_last_fit_t:     float                 = -GROUND_PLANE_FIT_INTERVAL_S
 _ground_plane_g: Optional[GroundPlane] = None
-_ransac_rng                            = np.random.default_rng(42)
+_ransac_rng                            = np.random.default_rng(42)  # fixed seed ensures reproducible plane fitting
 
 
 def _fit_ground_plane() -> None:
@@ -586,57 +575,37 @@ def _fit_ground_plane() -> None:
     normal   = Vt[-1].astype(np.float32)
     if normal[1] > 0:
         normal = -normal
+    if abs(float(normal[1])) < GROUND_PLANE_NORMAL_MIN_Y:
+        return
 
-    _ground_plane_g = GroundPlane(centroid=centroid.astype(np.float32),
-                                  normal=normal,
-                                  n_samples=int(len(best_inliers)))
+    # compute quality metrics
+    d_final      = -float(np.dot(normal.astype(np.float64), centroid))
+    residuals    = np.abs(ipts @ normal.astype(np.float64) + d_final)
+    fit_rmse     = float(np.sqrt((weights * residuals ** 2).sum()))
+    inlier_ratio = len(best_inliers) / n
+
+    was_none = _ground_plane_g is None
+    _ground_plane_g = GroundPlane(
+        centroid=centroid.astype(np.float32),
+        normal=normal,
+        n_samples=int(len(best_inliers)),
+        inlier_ratio=float(inlier_ratio),
+        fit_rmse=float(fit_rmse),
+    )
+    if was_none:
+        print(f"Ground plane: first fit "
+              f"n_samples={len(best_inliers)} inlier_ratio={inlier_ratio:.2f} "
+              f"fit_rmse={fit_rmse:.3f}m normal_y={float(normal[1]):.3f}")
 
 
 def get_ground_plane() -> Optional[GroundPlane]:
     return _ground_plane_g
 
-# ── Detection message ─────────────────────────────────────────────────────────
-_BODY_DEPTH_M = 0.25
-_SHOULDER_W_M = 0.45
-_last_det_msg = None
-
-def _person_to_obj(p: PersonData) -> DetectedObject:
-    r, er, ar = p.distance_m, math.radians(p.elevation_deg), math.radians(p.azimuth_deg)
-    hd  = r * math.cos(er)
-    yaw = (float(math.atan2(float(p.gaze_direction[0]), float(p.gaze_direction[2])))
-           if p.gaze_direction is not None else float(ar))
-    jv   = p.joint_visible
-    conf = (float(p.joint_scores[jv].mean()) if jv is not None and jv.any()
-            else float(p.joint_scores.mean()))
-    spd  = (math.sqrt(p.velocity_m_per_s.vx**2 + p.velocity_m_per_s.vy**2)
-            if p.velocity_m_per_s is not None else 0.0)
-    return DetectedObject(
-        id=p.person_id, object_class="PEDESTRIAN", score=conf,
-        pose=ObjectPose(x=hd * math.cos(ar), y=hd * math.sin(ar),
-                        z=r * math.sin(er), yaw=yaw, pitch=0.0, roll=0.0),
-        size=ObjectSize(l=_BODY_DEPTH_M, w=_SHOULDER_W_M, h=p.height_m),
-        velocity=p.velocity_m_per_s,
-        label=ObjectLabel(text=f"H:{p.height_m*100:.0f}cm spd:{spd*3.6:.1f}km/h",
-                          value=round(p.height_m, 3)),
-    )
-
-def build_detection_message(persons: List[PersonData], timestamp_s: float,
-                             frame_id: str = "CAMERA") -> DetectionMessage:
-    global _last_det_msg
-    sec  = int(timestamp_s)
-    nsec = int((timestamp_s - sec) * 1_000_000_000)
-    _last_det_msg = DetectionMessage(
-        header=MessageHeader(sec=sec, nanosec=nsec, frame_id=frame_id),
-        objects=[_person_to_obj(p) for p in persons],
-    )
-    return _last_det_msg
-
-def get_last_detection_message():
-    return _last_det_msg
 
 # ── Camera init ───────────────────────────────────────────────────────────────
 def init_camera(frame_width: int, frame_height: int, fps: float) -> dict:
     global _camera_params
+    init_inference()
     json_path = find_camera_json(frame_width, frame_height, CAMERA_JSON_DIR)
     if json_path:
         _camera_params = load_camera_params(json_path)
@@ -656,17 +625,17 @@ def init_camera(frame_width: int, frame_height: int, fps: float) -> dict:
           f"  ({'distortion active' if d_norm > 1e-6 else 'zero – undistort is identity'})")
     return _camera_params
 
-def get_camera() -> Optional[dict]:
-    return _camera_params
 
 # ── Main inference loop ───────────────────────────────────────────────────────
 def process_frame(bgr_frame, timestamp_s: float = 0.0) -> List[PersonData]:
     if _camera_params is None:
         raise RuntimeError("call init_camera() before process_frame()")
+    if _inference_model is None:
+        raise RuntimeError("call init_camera() before process_frame() – model not loaded")
     try:
         kp3d_all, scores_all, _, kp2d_all = _inference_model(bgr_frame)
-    except Exception as e:
-        print(f"Inference error: {e}"); return []
+    except Exception:
+        import traceback; traceback.print_exc(); return []
 
     K = _camera_params["K"]
     D = _camera_params["D"]
@@ -676,7 +645,7 @@ def process_frame(bgr_frame, timestamp_s: float = 0.0) -> List[PersonData]:
         sc      = scores_all[i, :17].astype(np.float32)
         k3      = kp3d_all[i,  :17].astype(np.float32)
         px_dist = kp2d_all[i,  :17, :2].astype(np.float32)
-        px      = _undistort_keypoints(px_dist, K, D)
+        px      = _undistort_keypoints(px_dist, K, D)  # no-op when D=0
 
         if (sc > MIN_KEYPOINT_CONFIDENCE).sum() < MIN_VISIBLE_KEYPOINTS:
             continue
@@ -712,12 +681,15 @@ def process_frame(bgr_frame, timestamp_s: float = 0.0) -> List[PersonData]:
 
         _profiles.push_height_sample(
             pid, h_m,
-            head_visible  = any(sc[j] > MIN_KEYPOINT_CONFIDENCE for j in [0, 1, 2, 3, 4]),
-            ankle_visible = any(sc[j] > MIN_KEYPOINT_CONFIDENCE for j in [15, 16]))
+            head_visible  = any(sc[j] > MIN_KEYPOINT_CONFIDENCE for j in _JOINT_HEAD),
+            ankle_visible = any(sc[j] > MIN_KEYPOINT_CONFIDENCE for j in _JOINT_ANKLES))
 
-        sm_dist, sm_elev, sm_azim, sm_h = _profiles.smooth_display_values(
-            pid, dist, elev, azim,
-            _profiles.get_height_reference(pid), timestamp_s)
+        # smooth depth anchor on forward axis only (z), not spherical dist
+        z_smoothed = _profiles.smooth_z_root(pid, float(centroid_3d[2]), timestamp_s)
+        dist = dist * (z_smoothed / max(float(centroid_3d[2]), 1e-3))
+        sm_dist, sm_elev, sm_azim = _profiles.smooth_display_values(
+            pid, dist, elev, azim, timestamp_s)
+        sm_h = _profiles.get_published_height(pid, timestamp_s)
 
         gaze_origin, gaze_dir = compute_gaze_ray_3d(jm, sc)
         velocity               = _profiles.compute_velocity(pid, centroid_3d, timestamp_s)
@@ -732,7 +704,7 @@ def process_frame(bgr_frame, timestamp_s: float = 0.0) -> List[PersonData]:
             velocity_m_per_s=velocity,
         ))
 
-    global _last_ground_t
+    global _last_ground_t, _last_fit_t
     if (GROUND_PLANE_ENABLED
             and timestamp_s - _last_ground_t >= GROUND_PLANE_SAMPLE_INTERVAL_S):
         for p in results:
@@ -743,9 +715,13 @@ def process_frame(bgr_frame, timestamp_s: float = 0.0) -> List[PersonData]:
             if hip_vis:
                 h_ref  = _profiles.get_height_reference(p.person_id)
                 gnd_pt = p.joints_meters[hip_vis].mean(axis=0).copy()
+                # shift hip point downward (Y+ = down) to estimated floor level
                 gnd_pt[1] += (1.0 - VISIBLE_BODY_RATIO_HIPS) * h_ref
                 _ground_ref_buf.append((timestamp_s, gnd_pt))
         _last_ground_t = timestamp_s
-        _fit_ground_plane()
+        if (GROUND_PLANE_FIT_INTERVAL_S <= 0
+                or timestamp_s - _last_fit_t >= GROUND_PLANE_FIT_INTERVAL_S):
+            _last_fit_t = timestamp_s
+            _fit_ground_plane()
 
     return results
