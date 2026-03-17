@@ -1,13 +1,12 @@
 """frontend.py – video capture loop, overlay drawing, recording, keyboard control.
 
 Keys:
-  R       – toggle recording (MP4 + NDJSON)
-  Space   – pause / resume
-  A / D   – seek ±SEEK_STEP_SECONDS
-  Q / Esc – quit
+    R       – toggle recording (MP4 + NDJSON)
+    Space   – pause / resume
+    A / D   – seek ±SEEK_STEP_SECONDS
+    Q / Esc – quit
 """
 import math, time
-from collections import deque
 from datetime import datetime
 from typing import Optional
 
@@ -21,6 +20,7 @@ from backend import (
     PersonData, proj3d2d, gaze_angles_3d,
     get_ground_plane,
 )
+
 from basics import (
     VIDEO_PATH, OUTPUT_DIR, FPS_FALLBACK, SEEK_STEP_SECONDS,
     DISPLAY_MAX_WIDTH_PX, DISPLAY_MAX_HEIGHT_PX,
@@ -38,7 +38,8 @@ from basics import (
     BEARING_RAY_THICKNESS, BEARING_ENDPOINT_COLOR, BEARING_ENDPOINT_RADIUS,
     GAZE_RAY_LENGTH_M,
     GAZE_ORIGIN_DOT_RADIUS, GAZE_ENDPOINT_RADIUS, KEYPOINT_RADIUS,
-    LABEL_LINE_SPACING_PX, LABEL_SMOOTH_WINDOW_S,
+    LABEL_LINE_SPACING_PX,
+    TAU_CAM_HEIGHT_S,
     GROUND_PLANE_ENABLED, GROUND_PLANE_MAX_DEPTH_M, GROUND_PLANE_LINE_THICKNESS,
     GROUND_PLANE_FILL_ALPHA, COLOR_GROUND_PLANE_FILL,
     GROUND_PLANE_X_STEP_M, GROUND_PLANE_X_HALF_M,
@@ -48,29 +49,9 @@ from basics import (
 
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
-
-# ── Label smoother ────────────────────────────────────────────────────────────
-class LabelSmoother:
-    """Per-person trailing-average smoother for numerical overlay values."""
-
-    def __init__(self):
-        self._buf: dict = {}   # (pid, field) -> deque[(t, v)]
-
-    def push(self, person_id: int, field: str,
-             value: float, t_s: float) -> float:
-        key = (person_id, field)
-        buf = self._buf.setdefault(key, deque())
-        buf.append((t_s, value))
-        cutoff = t_s - LABEL_SMOOTH_WINDOW_S
-        while buf and buf[0][0] < cutoff:
-            buf.popleft()
-        return sum(v for _, v in buf) / len(buf)
-
-
-_label_smoother  = LabelSmoother()
-_h_cam_ema: Optional[float] = None
-_H_CAM_EMA_ALPHA = 0.05   # ~60 frames to 95% at 13 fps
-
+# ── Camera-height EMA state ───────────────────────────────────────────────────
+_h_cam_ema:    Optional[float] = None
+_h_cam_last_t: Optional[float] = None
 
 # ── Drawing helpers ───────────────────────────────────────────────────────────
 def _text(img: np.ndarray, text: str, pos: tuple,
@@ -78,15 +59,20 @@ def _text(img: np.ndarray, text: str, pos: tuple,
     cv2.putText(img, text, pos, cv2.FONT_HERSHEY_SIMPLEX,
                 scale, (0, 0, 0), TEXT_OUTLINE_THICKNESS + 2)
     cv2.putText(img, text, pos, cv2.FONT_HERSHEY_SIMPLEX,
-                scale, color,   TEXT_OUTLINE_THICKNESS)
+                scale, color, TEXT_OUTLINE_THICKNESS)
 
 
 def draw_ground_plane(
-    img: np.ndarray, gp: Optional[GroundPlane],
-    fx: float, fy: float, cx: float, cy: float,
-    ds: float = 1.0,
+        img:         np.ndarray,
+        gp:          Optional[GroundPlane],
+        fx:          float,
+        fy:          float,
+        cx:          float,
+        cy:          float,
+        ds:          float = 1.0,
+        timestamp_s: float = 0.0,
 ) -> None:
-    global _h_cam_ema
+    global _h_cam_ema, _h_cam_last_t
     h_img, w_img = img.shape[:2]
     y_near = int(h_img * GROUND_PLANE_NEAR_FRAC)
     y_far  = int(h_img * GROUND_PLANE_FAR_FRAC)
@@ -122,12 +108,12 @@ def draw_ground_plane(
     xl_f = max(0, min(w_img-1, _x_px(-x_half, z_far)))
     xr_f = max(0, min(w_img-1, _x_px( x_half, z_far)))
 
-    poly = np.array([[xl_n, y_near], [xr_n, y_near],
-                     [xr_f, y_far],  [xl_f, y_far]], dtype=np.int32)
+    poly    = np.array([[xl_n, y_near], [xr_n, y_near],
+                        [xr_f, y_far],  [xl_f, y_far]], dtype=np.int32)
     overlay = img.copy()
     cv2.fillPoly(overlay, [poly], COLOR_GROUND_PLANE_FILL)
     cv2.addWeighted(overlay, GROUND_PLANE_FILL_ALPHA,
-                    img,     1.0 - GROUND_PLANE_FILL_ALPHA, 0, img)
+                    img, 1.0 - GROUND_PLANE_FILL_ALPHA, 0, img)
 
     lthick = max(1, round(GROUND_PLANE_LINE_THICKNESS * ds))
     for x_m in np.arange(-x_half, x_half + 1e-9, GROUND_PLANE_X_STEP_M):
@@ -136,27 +122,31 @@ def draw_ground_plane(
         cv2.line(img, (xn, y_near), (xf, y_far),
                  COLOR_GROUND_LONG_LINES, lthick, cv2.LINE_AA)
 
-    # ── Camera height above ground plane ──────────────────────────────────────
     if gp is not None and abs(float(gp.normal[1])) > 1e-3:
-        h_raw  = abs(float(np.dot(gp.normal.astype(np.float64),
-                                  gp.centroid.astype(np.float64))))
-        _h_cam_ema = (h_raw if _h_cam_ema is None
-                      else _H_CAM_EMA_ALPHA * h_raw
-                           + (1.0 - _H_CAM_EMA_ALPHA) * _h_cam_ema)
+        h_raw = abs(float(np.dot(gp.normal.astype(np.float64),
+                                 gp.centroid.astype(np.float64))))
+        if _h_cam_ema is None or _h_cam_last_t is None:
+            _h_cam_ema = h_raw
+        else:
+            dt         = max(0.0, timestamp_s - _h_cam_last_t)
+            alpha      = 1.0 - math.exp(-dt / TAU_CAM_HEIGHT_S) if dt > 1e-4 else 0.0
+            _h_cam_ema = alpha * h_raw + (1.0 - alpha) * _h_cam_ema
+        _h_cam_last_t = timestamp_s
+
         label = f"cam:{_h_cam_ema:.2f}m"
-        fs = LABEL_FONT_SCALE_SMALL * ds
+        fs    = LABEL_FONT_SCALE_SMALL * ds
         (tw, th), bl = cv2.getTextSize(
             label, cv2.FONT_HERSHEY_SIMPLEX, fs, TEXT_OUTLINE_THICKNESS + 2)
-        lx = max(2,      min(w_img - tw - 2, int(cx) + 8))
+        lx = max(2, min(w_img - tw - 2, int(cx) + 8))
         ly = max(th + 2, min(h_img - bl - 2, int(cy) - 8))
         _text(img, label, (lx, ly), fs, (0, 255, 255))
 
 
 def draw_person(
-    img: np.ndarray, p: PersonData,
-    fx: float, fy: float, cx: float, cy: float,
-    ds: float = 1.0,
-    timestamp_s: float = 0.0,
+        img: np.ndarray,
+        p:   PersonData,
+        fx:  float, fy: float, cx: float, cy: float,
+        ds:  float = 1.0,
 ) -> None:
     jm     = p.joints_meters
     vis    = p.joint_visible
@@ -164,9 +154,9 @@ def draw_person(
     px_x   = ((jm[:, 0] / safe_d) * fx + cx).astype(np.int32)
     px_y   = ((jm[:, 1] / safe_d) * fy + cy).astype(np.int32)
 
-    el  = math.radians(p.elevation_deg)
-    az  = math.radians(p.azimuth_deg)
-    hd  = p.distance_m * math.cos(el)
+    el = math.radians(p.elevation_deg)
+    az = math.radians(p.azimuth_deg)
+    hd = p.distance_m * math.cos(el)
     torso_3d = np.array([hd * math.sin(az),
                          -p.distance_m * math.sin(el),
                          hd * math.cos(az)], dtype=np.float32)
@@ -180,9 +170,7 @@ def draw_person(
                    BEARING_ENDPOINT_COLOR, -1)
         mid_px = proj3d2d((torso_3d * 0.5).astype(np.float32), fx, fy, cx, cy)
         if mid_px is not None:
-            sm_dist = _label_smoother.push(p.person_id, "dist_m",
-                                           p.distance_m, timestamp_s)
-            _text(img, f"{sm_dist:.1f}m",
+            _text(img, f"{p.distance_m:.1f}m",
                   (int(mid_px[0]) + 4, int(mid_px[1]) - 4),
                   LABEL_FONT_SCALE_SMALL * ds, COLOR_BEARING_RAY)
 
@@ -237,35 +225,31 @@ def draw_person(
     conf = (float(p.joint_scores[p.joint_visible].mean())
             if p.joint_visible is not None and p.joint_visible.any() else 0.0)
 
-    _sm     = lambda fld, val: _label_smoother.push(p.person_id, fld, val, timestamp_s)
-    spd_raw = (math.sqrt(p.velocity_m_per_s.vx**2 + p.velocity_m_per_s.vy**2) * 3.6
+    spd_kmh = (round(math.sqrt(p.velocity_m_per_s.vx**2
+                               + p.velocity_m_per_s.vy**2) * 3.6 * 2) / 2
                if p.velocity_m_per_s is not None else 0.0)
-    sm_elev = _sm("elev", p.elevation_deg)
-    sm_azim = _sm("azim", p.azimuth_deg)
-    sm_h    = _sm("h_m",  p.height_m)
-    sm_spd  = round(_sm("spd", spd_raw) * 2) / 2
 
-    _text(img, f"#{p.person_id}  {conf:.0%}", (ax, ay),       fs, COLOR_LABEL_GAZE)
-    _text(img, gaze_label,                    (ax, ay - g),   fs, COLOR_LABEL_GAZE)
-    _text(img, f"ver:{sm_elev:+.1f}",         (ax, ay - 2*g), fs, COLOR_LABEL_ANGLES)
-    _text(img, f"hor:{sm_azim:+.1f}",         (ax, ay - 3*g), fs, COLOR_LABEL_ANGLES)
-    _text(img, f"spd:{sm_spd:.1f}km/h",       (ax, ay - 4*g), fs, COLOR_LABEL_ANGLES)
-    _text(img, f"H:{sm_h*100:.0f}cm",         (ax, ay - 5*g), fs, COLOR_LABEL_DIST)
+    _text(img, f"#{p.person_id} {conf:.0%}",    (ax, ay),       fs, COLOR_LABEL_GAZE)
+    _text(img, gaze_label,                       (ax, ay - g),   fs, COLOR_LABEL_GAZE)
+    _text(img, f"ver:{p.elevation_deg:+.1f}",   (ax, ay - 2*g), fs, COLOR_LABEL_ANGLES)
+    _text(img, f"hor:{p.azimuth_deg:+.1f}",     (ax, ay - 3*g), fs, COLOR_LABEL_ANGLES)
+    _text(img, f"spd:{spd_kmh:.1f}km/h",        (ax, ay - 4*g), fs, COLOR_LABEL_ANGLES)
+    _text(img, f"H:{p.height_m*100:.0f}cm",     (ax, ay - 5*g), fs, COLOR_LABEL_DIST)
 
 
 def draw_hud(img, n, t_s, total_s, rec, paused,
              cam_src, h, ds: float = 1.0) -> None:
-    status = f"Persons:{n}  {t_s:.1f}s/{total_s:.1f}s"
-    if rec:    status += "  [REC]"
-    if paused: status += "  [PAUSED]"
+    status = f"Persons:{n} {t_s:.1f}s/{total_s:.1f}s"
+    if rec:    status += " [REC]"
+    if paused: status += " [PAUSED]"
     col  = COLOR_HUD_RECORDING if rec else COLOR_HUD_PAUSED if paused else COLOR_HUD_RUNNING
     row1 = max(20, round(30 * ds))
     row2 = max(36, round(56 * ds))
     _text(img, status,           (10, row1), HUD_FONT_SCALE_STATUS * ds, col)
     _text(img, f"CAM:{cam_src}", (10, row2), HUD_FONT_SCALE_CAM    * ds, COLOR_HUD_CAM_INFO)
     _text(img,
-          f"[A]<<{SEEK_STEP_SECONDS}s  [D]>>{SEEK_STEP_SECONDS}s  "
-          "[Space]Pause  [R]Rec+NDJSON  [Q]Quit",
+          f"[A]<<{SEEK_STEP_SECONDS}s [D]>>{SEEK_STEP_SECONDS}s "
+          "[Space]Pause [R]Rec+NDJSON [Q]Quit",
           (10, h - max(8, round(12 * ds))),
           LABEL_FONT_SCALE_SMALL * ds, COLOR_HUD_HINT)
 
@@ -289,21 +273,21 @@ def main() -> None:
     fps      = cap.get(cv2.CAP_PROP_FPS) or FPS_FALLBACK
     n_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
     total_s  = n_frames / fps
-    print(f"Video  : {fw}x{fh}  {fps:.1f}fps  {total_s:.1f}s  ({n_frames} frames)")
+    print(f"Video : {fw}x{fh} {fps:.1f}fps {total_s:.1f}s ({n_frames} frames)")
 
-    cam            = init_camera(fw, fh, fps)
-    fx, fy, cx, cy = cam["FX"], cam["FY"], cam["CX"], cam["CY"]
-    _ds_raw = math.sqrt(fw * fh / (1808.0 * 1392.0))
-    ds      = 1.0 + (_ds_raw - 1.0) * 0.6
-    scale   = min(DISPLAY_MAX_WIDTH_PX / fw, DISPLAY_MAX_HEIGHT_PX / fh, 1.0)
-    dw, dh  = int(fw * scale), int(fh * scale)
+    cam             = init_camera(fw, fh, fps)
+    fx, fy, cx, cy  = cam["FX"], cam["FY"], cam["CX"], cam["CY"]
+    _ds_raw         = math.sqrt(fw * fh / (1808.0 * 1392.0))
+    ds              = 1.0 + (_ds_raw - 1.0) * 0.6
+    scale           = min(DISPLAY_MAX_WIDTH_PX / fw, DISPLAY_MAX_HEIGHT_PX / fh, 1.0)
+    dw, dh          = int(fw * scale), int(fh * scale)
 
-    paused, rec = False, False
+    paused, rec     = False, False
     vw = nw = vp = np_ = None
     cur_frame = fps_cnt = 0
-    fps_t0    = time.time()
+    fps_t0              = time.time()
     last_canvas: Optional[np.ndarray] = None
-    persons:     list = []
+    persons: list       = []
 
     cv2.namedWindow("RTMPose 3D", cv2.WINDOW_NORMAL)
     cv2.resizeWindow("RTMPose 3D", dw, dh)
@@ -320,10 +304,10 @@ def main() -> None:
             t_s       = cur_frame / fps
             persons   = process_frame(frame, t_s)
             fps_cnt  += 1
-            now = time.time()
+            now       = time.time()
             if now - fps_t0 >= 1.0:
-                print(f"FPS:{fps_cnt/(now-fps_t0):.1f}  frame:{cur_frame}/{n_frames}"
-                      f"  t:{t_s:.1f}s  persons:{len(persons)}  {DEVICE.upper()}")
+                print(f"FPS:{fps_cnt/(now-fps_t0):.1f} frame:{cur_frame}/{n_frames}"
+                      f" t:{t_s:.1f}s persons:{len(persons)} {DEVICE.upper()}")
                 fps_t0, fps_cnt = now, 0
 
         if paused and last_canvas is not None:
@@ -332,11 +316,14 @@ def main() -> None:
             canvas = np.zeros((fh, fw, 3), dtype=np.uint8)
         else:
             canvas = frame.copy()
-            if GROUND_PLANE_ENABLED:
-                draw_ground_plane(canvas, get_ground_plane(), fx, fy, cx, cy, ds)
-            for p in persons:
-                draw_person(canvas, p, fx, fy, cx, cy, ds, t_s)
-            last_canvas = canvas
+
+        if GROUND_PLANE_ENABLED:
+            draw_ground_plane(canvas, get_ground_plane(), fx, fy, cx, cy, ds, t_s)
+
+        for p in persons:
+            draw_person(canvas, p, fx, fy, cx, cy, ds)
+
+        last_canvas = canvas
 
         draw_hud(canvas, 0 if paused else len(persons),
                  cur_frame / fps, total_s, rec, paused, cam["source"], fh, ds)
@@ -363,7 +350,7 @@ def main() -> None:
                 np_ = OUTPUT_DIR / f"rec_{ts}.ndjson"
                 vw  = cv2.VideoWriter(str(vp), cv2.VideoWriter_fourcc(*"mp4v"), fps, (fw, fh))
                 nw  = open(np_, "w", encoding="utf-8")
-                print(f"Recording  : {vp}"); print(f"Messages   : {np_}")
+                print(f"Recording : {vp}"); print(f"Messages  : {np_}")
             else:
                 rec = False; vw, nw = _stop_rec(vw, nw, vp, np_)
         elif key == ord("a"):

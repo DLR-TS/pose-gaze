@@ -31,7 +31,7 @@ TRACKER_MIN_HIT_STREAK       = 2
 TRACKER_CENTROID_DIST_NORM   = 100.0
 TRACKER_CENTROID_DIST_WEIGHT = 0.3
 
-# ── Body geometry (DO NOT CHANGE – anchors De Leva 1996) ─────────────────────
+# ── Body geometry (De Leva 1996 segment ratios) ───────────────────────────────
 BODY_HEIGHT_PRIOR_M = 1.75
 
 DE_LEVA_SEGMENTS: list = [
@@ -41,15 +41,14 @@ DE_LEVA_SEGMENTS: list = [
     (13, 15, 0.23), (14, 16, 0.23), ( 3,  5, 0.09), ( 4,  6, 0.09),
 ]
 
-RTMW3D_HEAD_ANKLE_Z_RATIO = 0.96
-VISIBLE_BODY_RATIO_ANKLES = 1.00
-VISIBLE_BODY_RATIO_KNEES  = 0.75
-VISIBLE_BODY_RATIO_HIPS   = 0.52
-JOINT_DEPTH_MIN_M         = 0.1
-JOINT_DEPTH_MAX_M         = 60.0
-BODY_HEIGHT_MIN_M         = 0.5
-BODY_HEIGHT_MAX_M         = 2.5
-
+RTMW3D_HEAD_ANKLE_Z_RATIO    = 0.96
+VISIBLE_BODY_RATIO_ANKLES    = 1.00
+VISIBLE_BODY_RATIO_KNEES     = 0.75
+VISIBLE_BODY_RATIO_HIPS      = 0.52
+JOINT_DEPTH_MIN_M            = 0.1
+JOINT_DEPTH_MAX_M            = 60.0
+BODY_HEIGHT_MIN_M            = 0.5
+BODY_HEIGHT_MAX_M            = 2.5
 HEIGHT_BUFFER_WINDOW_FRAMES  = 60
 HEIGHT_BUFFER_MIN_SAMPLES    = 5
 HEIGHT_OUTLIER_MAX_DEVIATION = 0.30
@@ -57,20 +56,18 @@ HEIGHT_OUTLIER_MAX_DEVIATION = 0.30
 # ── Gaze ──────────────────────────────────────────────────────────────────────
 GAZE_RAY_LENGTH_M = 3.0
 
-# ── EMA smoothing ─────────────────────────────────────────────────────────────
-EMA_ALPHA_PIXEL_HEIGHT = 0.30
-EMA_ALPHA_DISPLAY      = 0.35
+# ── EMA time constants [s] ────────────────────────────────────────────────────
+TAU_PIXEL_HEIGHT_S = 0.3
+TAU_DISPLAY_S      = 1.0
+TAU_CAM_HEIGHT_S   = 5.0
 
 # ── Velocity estimation ───────────────────────────────────────────────────────
-VELOCITY_EMA_TAU_S    = 2.0    # time-based EMA time-constant [s], fps-invariant
-VELOCITY_BUFFER_S     = 2.0    # OLS regression window [s]
-VELOCITY_MIN_SPAN_S   = 0.5    # minimum data span required before computing [s]
-VELOCITY_MAX_DT_S     = 3.0    # flush buffer on timestamp gap > this [s]
-VELOCITY_MAX_SPEED_MS = 8.0    # hard cap [m/s] ≈ 29 km/h
-VELOCITY_BUFFER_SIZE  = 60     # deque upper limit (frames)
-
-# ── Label smoother ────────────────────────────────────────────────────────────
-LABEL_SMOOTH_WINDOW_S = 2.0    # trailing-average window for overlay values [s]
+VELOCITY_EMA_TAU_S    = 2.0
+VELOCITY_BUFFER_S     = 2.0
+VELOCITY_MIN_SPAN_S   = 0.5
+VELOCITY_MAX_DT_S     = 3.0
+VELOCITY_MAX_SPEED_MS = 8.0
+VELOCITY_BUFFER_SIZE  = 60
 
 # ── Display ───────────────────────────────────────────────────────────────────
 DISPLAY_MAX_WIDTH_PX  = 1580
@@ -103,37 +100,34 @@ SKELETON_EDGE_COLORS: list = [
 
 # ── Colors ────────────────────────────────────────────────────────────────────
 COLOR_KEYPOINT_NOSE     = (0,   0,   255)
-COLOR_KEYPOINT_EAR      = (255, 0,   0)
-COLOR_KEYPOINT_OTHER    = (0,   255, 0)
+COLOR_KEYPOINT_EAR      = (255, 0,   0  )
+COLOR_KEYPOINT_OTHER    = (0,   255, 0  )
 COLOR_EAR_CONNECTOR     = (150, 150, 150)
-COLOR_GAZE_ORIGIN_DOT   = (0,   255, 0)
+COLOR_GAZE_ORIGIN_DOT   = (0,   255, 0  )
 COLOR_GAZE_LINE         = (0,   255, 255)
 COLOR_GAZE_ENDPOINT     = (0,   0,   255)
-
-COLOR_LABEL_DIST        = (255, 255, 0)
+COLOR_LABEL_DIST        = (255, 255, 0  )
 COLOR_LABEL_ANGLES      = (255, 0,   255)
 COLOR_LABEL_GAZE        = (0,   255, 255)
-
 COLOR_HUD_RECORDING     = (0,   0,   255)
 COLOR_HUD_PAUSED        = (0,   220, 255)
-COLOR_HUD_RUNNING       = (0,   255, 0)
+COLOR_HUD_RUNNING       = (0,   255, 0  )
 COLOR_HUD_CAM_INFO      = (200, 200, 200)
 COLOR_HUD_HINT          = (255, 255, 255)
-
-COLOR_BEARING_RAY       = (255, 200, 0)
-COLOR_GROUND_LONG_LINES = (80,  80,  80)
-COLOR_GROUND_PLANE_FILL = (30,  80,  30)
+COLOR_BEARING_RAY       = (255, 200, 0  )
+COLOR_GROUND_LONG_LINES = (80,  80,  80 )
+COLOR_GROUND_PLANE_FILL = (30,  80,  30 )
 
 # ── Drawing sizes ─────────────────────────────────────────────────────────────
-KEYPOINT_RADIUS         = 2
-GAZE_ORIGIN_DOT_RADIUS  = 2
-GAZE_ENDPOINT_RADIUS    = 3
-SKELETON_LINE_THICKNESS = 1
-GAZE_LINE_THICKNESS     = 2
-TEXT_OUTLINE_THICKNESS  = 2
-BEARING_RAY_THICKNESS   = 1
-BEARING_ENDPOINT_RADIUS = 4
-BEARING_ENDPOINT_COLOR  = (255, 200, 0)
+KEYPOINT_RADIUS          = 2
+GAZE_ORIGIN_DOT_RADIUS   = 2
+GAZE_ENDPOINT_RADIUS     = 3
+SKELETON_LINE_THICKNESS  = 1
+GAZE_LINE_THICKNESS      = 2
+TEXT_OUTLINE_THICKNESS   = 2
+BEARING_RAY_THICKNESS    = 1
+BEARING_ENDPOINT_RADIUS  = 4
+BEARING_ENDPOINT_COLOR   = (255, 200, 0)
 
 # ── Label layout ──────────────────────────────────────────────────────────────
 LABEL_LINE_SPACING_PX  = 26
@@ -142,17 +136,20 @@ HUD_FONT_SCALE_STATUS  = 0.7
 HUD_FONT_SCALE_CAM     = 0.45
 
 # ── Ground plane ──────────────────────────────────────────────────────────────
-GROUND_PLANE_ENABLED           = True
-GROUND_PLANE_MAX_DEPTH_M       = 20.0
-GROUND_PLANE_SAMPLE_INTERVAL_S = 0.5
-GROUND_PLANE_SAMPLE_BUFFER     = 200
-GROUND_PLANE_MIN_SAMPLES       = 20
-GROUND_PLANE_LINE_THICKNESS    = 1
-GROUND_PLANE_FILL_ALPHA        = 0.25
-GROUND_PLANE_X_STEP_M          = 1.0
-GROUND_PLANE_X_HALF_M          = 4.0
-GROUND_PLANE_NEAR_FRAC         = 0.75
-GROUND_PLANE_FAR_FRAC          = 0.25
+GROUND_PLANE_ENABLED              = True
+GROUND_PLANE_MAX_DEPTH_M          = 20.0
+GROUND_PLANE_SAMPLE_INTERVAL_S    = 0.5
+GROUND_PLANE_SAMPLE_BUFFER        = 200
+GROUND_PLANE_MIN_SAMPLES          = 20
+GROUND_PLANE_LINE_THICKNESS       = 1
+GROUND_PLANE_FILL_ALPHA           = 0.25
+GROUND_PLANE_X_STEP_M             = 1.0
+GROUND_PLANE_X_HALF_M             = 4.0
+GROUND_PLANE_NEAR_FRAC            = 0.75
+GROUND_PLANE_FAR_FRAC             = 0.25
+GROUND_PLANE_RANSAC_ITERATIONS    = 50
+GROUND_PLANE_RANSAC_INLIER_DIST   = 0.10
+GROUND_PLANE_TEMPORAL_DECAY_S     = 10.0
 
 # ── Shared data types ─────────────────────────────────────────────────────────
 @dataclass
