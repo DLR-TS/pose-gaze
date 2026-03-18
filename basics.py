@@ -12,7 +12,7 @@ MODEL_DIR       = SCRIPT_DIR / "models"
 OUTPUT_DIR      = SCRIPT_DIR / "recordings"
 CAMERA_JSON_DIR: Path = SCRIPT_DIR / "media"
 
-VIDEO_PATH   = CAMERA_JSON_DIR / "video_4112x2176_mvBlueCOUGAR-X109b_crop0-0-4112-2176.mp4"
+VIDEO_PATH   = CAMERA_JSON_DIR / "video_1808x1392_mvBlueCOUGAR-X109b_crop205-391-2013-1783.mp4"
 FPS_FALLBACK = 13.2
 
 K_FALLBACK = np.array(
@@ -43,10 +43,10 @@ DE_LEVA_SEGMENTS: list = [
     (13, 15, 0.23), (14, 16, 0.23), ( 3,  5, 0.09), ( 4,  6, 0.09),
 ]
 
-RTMW3D_HEAD_ANKLE_Z_RATIO    = 0.96  # model-specific head-to-ankle z-span fraction
-VISIBLE_BODY_RATIO_ANKLES    = 1.00  # full body visible; used to scale depth from pixel height
-VISIBLE_BODY_RATIO_KNEES     = 0.75  # body cropped at knee level
-VISIBLE_BODY_RATIO_HIPS      = 0.52  # body cropped at hip level
+RTMW3D_HEAD_ANKLE_Z_RATIO    = 0.96  # fraction of body height spanned by the model's z-axis between head and ankle joints; empirically calibrated for RTMPose-Wholebody3D
+VISIBLE_BODY_RATIO_ANKLES    = 1.00  # full body in frame; pixel span equals full body height
+VISIBLE_BODY_RATIO_KNEES     = 0.75  # body cropped below knees; pixel span covers ~75 % of height
+VISIBLE_BODY_RATIO_HIPS      = 0.52  # body cropped at hips; pixel span covers ~52 % of height
 JOINT_DEPTH_MIN_M            = 0.1   # clamp; avoids division artifacts near camera
 JOINT_DEPTH_MAX_M            = 60.0  # clamp; discard implausibly far joints
 BODY_HEIGHT_MIN_M            = 0.5
@@ -74,7 +74,7 @@ VELOCITY_MAX_SPEED_MS = 8.0  # clamp [m/s]; ~29 km/h
 VELOCITY_BUFFER_SIZE  = 60   # max position samples retained
 
 # ── Display ───────────────────────────────────────────────────────────────────
-DISPLAY_DS_REFERENCE_PX: Tuple[int, int] = (1808, 1392)  # reference resolution for ds scale factor
+DISPLAY_DS_REFERENCE_PX: Tuple[int, int] = (1808, 1392)  # native sensor resolution; line widths and font sizes are tuned for this resolution and scaled proportionally for other resolutions
 DISPLAY_MAX_WIDTH_PX  = 1580
 DISPLAY_MAX_HEIGHT_PX = 840
 SEEK_STEP_SECONDS     = 5
@@ -102,12 +102,13 @@ JOINT_LEFT_ANKLE     = 15
 JOINT_RIGHT_ANKLE    = 16
 
 # ── Skeleton ──────────────────────────────────────────────────────────────────
-# SKELETON_EDGES uses 1-based COCO indices; draw loop applies -1 offset
+# SKELETON_EDGES follows the original COCO convention (1-based joint numbering).
+# All drawing code converts to 0-based with -1 at use.
 SKELETON_EDGES: list = [
     (16,14),(14,12),(17,15),(15,13),(12,13),(6,12),(7,13),(6,7),
     (6,8),(7,9),(8,10),(9,11),(2,3),(1,2),(1,3),(2,4),(3,5),(4,6),(5,7),
 ]
-# 19 colors – one per edge (must match len(SKELETON_EDGES))
+# One color per skeleton edge; length must equal len(SKELETON_EDGES).
 SKELETON_EDGE_COLORS: list = [
     (255,0,0),(255,85,0),(255,170,0),(255,255,0),(170,255,0),(85,255,0),
     (0,255,0),(0,255,85),(0,255,170),(0,255,255),(0,170,255),(0,85,255),
@@ -182,8 +183,8 @@ class GroundPlane:
     centroid:     np.ndarray
     normal:       np.ndarray
     n_samples:    int   = 0
-    inlier_ratio: float = 0.0  # fraction of buffer points that are inliers
-    fit_rmse:     float = 0.0  # weighted RMS residual distance [m]
+    inlier_ratio: float = 0.0  # fraction of accumulated floor samples that lie within RANSAC inlier distance
+    fit_rmse:     float = 0.0  # temporally-weighted RMS distance of inlier points from the fitted plane [m]
 
 class CamHeightEMA:
     """Exponential moving average of camera height derived from ground plane.
@@ -295,8 +296,8 @@ def gaze_angles_3d(gaze_unit_dir) -> tuple:
             math.degrees(math.atan2(-float(gaze_unit_dir[1]), h)))
 
 # ── Detection message ────────────────────────────────────────────────────────
-_BODY_DEPTH_M = 0.25  # assumed pedestrian body depth [m]
-_SHOULDER_W_M = 0.45  # assumed shoulder width [m]
+_BODY_DEPTH_M = 0.25  # approximate frontal depth of a standing adult [m]; used for bounding box estimation
+_SHOULDER_W_M = 0.45  # approximate shoulder width of a standing adult [m]; used for bounding box estimation
 
 
 def _person_to_obj(p: PersonData) -> DetectedObject:

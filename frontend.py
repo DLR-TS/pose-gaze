@@ -13,12 +13,13 @@ from typing import Optional
 import cv2
 import numpy as np
 
-from basics import *  # noqa: F401,F403
+from basics import *
 import backend
 
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
-# grid x-positions for ground plane overlay; constant for given config
+# Precomputed grid x-positions for the ground plane overlay.
+# These depend only on configuration constants, so they are computed once at import time.
 _GRID_X_VALUES = np.arange(
     -GROUND_PLANE_X_HALF_M,
      GROUND_PLANE_X_HALF_M + 1e-9,
@@ -50,7 +51,8 @@ def draw_ground_plane(
     y_near = int(h_img * GROUND_PLANE_NEAR_FRAC)
     y_far  = int(h_img * GROUND_PLANE_FAR_FRAC)
 
-    # cache plane coefficients once for both near/far row queries
+    # Extract plane equation coefficients once so _row_to_z() can use them
+    # without re-reading the GroundPlane dataclass on every call.
     _gp_valid = gp is not None and abs(float(gp.normal[1])) >= GROUND_PLANE_NORMAL_MIN_Y
     if _gp_valid:
         _n  = gp.normal.astype(np.float64)
@@ -92,7 +94,8 @@ def draw_ground_plane(
     cv2.addWeighted(overlay, GROUND_PLANE_FILL_ALPHA,
                     img, 1.0 - GROUND_PLANE_FILL_ALPHA, 0, img)
 
-    # draw grid lines only when ground plane is fitted and reliable
+    # Grid lines are drawn only when the plane normal is sufficiently vertical
+    # (inlier_ratio > 0.3 guards against early, poorly-constrained fits).
     _gp_ok = _gp_valid and gp.inlier_ratio > 0.3
     if _gp_ok:
         lthick = max(1, round(GROUND_PLANE_LINE_THICKNESS * ds))
@@ -289,7 +292,7 @@ def main() -> None:
                 fps_t0, fps_cnt = now, 0
 
         if paused:
-            # paused: display last rendered frame unchanged
+            # While paused, reuse the last rendered canvas so the overlay remains visible.
             canvas = (last_canvas.copy()
                       if last_canvas is not None
                       else np.zeros((fh, fw, 3), dtype=np.uint8))

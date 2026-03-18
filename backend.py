@@ -16,7 +16,7 @@ from typing import Optional, List, Tuple
 
 from scipy.optimize import linear_sum_assignment
 
-from basics import *  # noqa: F401,F403
+from basics import *
 
 # ── Environment ───────────────────────────────────────────────────────────────
 MODEL_DIR.mkdir(parents=True, exist_ok=True)
@@ -30,7 +30,7 @@ ort.set_default_logger_severity(4)
 print(f"Backend : {DEVICE.upper()}")
 
 from rtmlib import Wholebody3d
-_inference_model: Optional["Wholebody3d"] = None  # lazy-initialised in init_inference()
+_inference_model: Optional["Wholebody3d"] = None  # populated on first call to init_inference()
 
 
 def init_inference() -> None:
@@ -44,7 +44,8 @@ def init_inference() -> None:
     _inference_model.det_model.score_thr = DETECTION_SCORE_THRESHOLD
     print(f"Backend : YOLOX score_thr -> {DETECTION_SCORE_THRESHOLD:.2f}")
 
-# precomputed index/ratio arrays for vectorised De Leva segment calculations
+# Module-level arrays for vectorised De Leva (1996) segment calculations.
+# Precomputed once so process_frame() avoids repeated list construction.
 _DELEVA_JOINT_A = np.array([seg[0] for seg in DE_LEVA_SEGMENTS], dtype=np.int32)
 _DELEVA_JOINT_B = np.array([seg[1] for seg in DE_LEVA_SEGMENTS], dtype=np.int32)
 _DELEVA_RATIO   = np.array([seg[2] for seg in DE_LEVA_SEGMENTS], dtype=np.float32)
@@ -272,7 +273,7 @@ class PersonProfiles:
         self._display_t:        dict = {}
         self._pos_history:      dict = {}
         self._vel_ema:          dict = {}
-        self._height_published: dict = {}  # pid → (last_t, value)
+        self._height_published: dict = {}  # maps person_id to (timestamp, published_value); throttles height output to HEIGHT_PUBLISH_INTERVAL_S
 
     def push_height_sample(self, person_id: int, height_m: float,
                            head_visible: bool, ankle_visible: bool) -> None:
@@ -393,7 +394,8 @@ class PersonProfiles:
         else:
             ema = raw.copy()
         self._vel_ema[person_id] = ema
-        # Axis mapping: ema=[X_cam, Y_cam, Z_cam]; Z_cam=fwd, X_cam=right, -Y_cam=up
+        # Camera coordinate convention: X=right, Y=down, Z=forward.
+        # ObjectVelocity uses X=forward, Y=right, Z=up, so axes are remapped here.
         return ObjectVelocity(vx=float(ema[2]),
                               vy=float(ema[0]),
                               vz=float(-ema[1]))
@@ -437,7 +439,9 @@ def compute_3d_pose(pixel_coords, kp3d_normalized, joint_scores,
     wt = float(cp[valid].sum())
     if wt < 1e-6:
         return None, 0., None, None
-    # u2m: metres-per-normalised-unit; maps model z-span to real-world depth
+    # u2m converts the model's dimensionless z-axis span into metres.
+    # It is derived from De Leva segment ratios weighted by joint confidence,
+    # anchored to BODY_HEIGHT_PRIOR_M until a personal height estimate is available.
     u2m = float((_DELEVA_RATIO[valid]
                  * (BODY_HEIGHT_PRIOR_M / span[valid])
                  * cp[valid]).sum() / wt)
@@ -468,7 +472,9 @@ def compute_3d_pose(pixel_coords, kp3d_normalized, joint_scores,
     visible_body_ratio = (VISIBLE_BODY_RATIO_ANKLES if ankle_joints else
                           VISIBLE_BODY_RATIO_HIPS   if hip_joints   else
                           VISIBLE_BODY_RATIO_KNEES)
-    # depth anchor: pinhole inverse – how far away is a body of this pixel height?
+    # Depth anchor via pinhole camera model: a person of known height h at depth z
+    # projects to pixel_height = focal_y * h / z, so z = focal_y * h / pixel_height.
+    # VISIBLE_BODY_RATIO corrects for partially-occluded bodies.
     z_root = focal_y * height_reference_m * visible_body_ratio / pixel_height
 
     depth  = np.clip(z_root + kp3d_normalized[:17, 2] * u2m,
@@ -524,7 +530,7 @@ _ground_ref_buf: deque                 = deque(maxlen=GROUND_PLANE_SAMPLE_BUFFER
 _last_ground_t:  float                 = -GROUND_PLANE_SAMPLE_INTERVAL_S
 _last_fit_t:     float                 = -GROUND_PLANE_FIT_INTERVAL_S
 _ground_plane_g: Optional[GroundPlane] = None
-_ransac_rng                            = np.random.default_rng(42)  # fixed seed ensures reproducible plane fitting
+_ransac_rng = np.random.default_rng(42)  # fixed seed for reproducible RANSAC plane fits across runs
 
 
 def _fit_ground_plane() -> None:
@@ -578,7 +584,8 @@ def _fit_ground_plane() -> None:
     if abs(float(normal[1])) < GROUND_PLANE_NORMAL_MIN_Y:
         return
 
-    # compute quality metrics
+    # Evaluate fit quality: RMSE over inliers (temporally weighted) and inlier ratio.
+    # Both are stored in GroundPlane and exposed for downstream confidence gating.
     d_final      = -float(np.dot(normal.astype(np.float64), centroid))
     residuals    = np.abs(ipts @ normal.astype(np.float64) + d_final)
     fit_rmse     = float(np.sqrt((weights * residuals ** 2).sum()))
@@ -645,7 +652,7 @@ def process_frame(bgr_frame, timestamp_s: float = 0.0) -> List[PersonData]:
         sc      = scores_all[i, :17].astype(np.float32)
         k3      = kp3d_all[i,  :17].astype(np.float32)
         px_dist = kp2d_all[i,  :17, :2].astype(np.float32)
-        px      = _undistort_keypoints(px_dist, K, D)  # no-op when D=0
+        px      = _undistort_keypoints(px_dist, K, D)  # identity when distortion coefficients are zero
 
         if (sc > MIN_KEYPOINT_CONFIDENCE).sum() < MIN_VISIBLE_KEYPOINTS:
             continue
@@ -684,7 +691,9 @@ def process_frame(bgr_frame, timestamp_s: float = 0.0) -> List[PersonData]:
             head_visible  = any(sc[j] > MIN_KEYPOINT_CONFIDENCE for j in _JOINT_HEAD),
             ankle_visible = any(sc[j] > MIN_KEYPOINT_CONFIDENCE for j in _JOINT_ANKLES))
 
-        # smooth depth anchor on forward axis only (z), not spherical dist
+        # Smooth only the forward depth component (z) via EMA.
+        # Spherical distance and angles are then derived from the smoothed z,
+        # which avoids oscillation in distance without distorting bearing angles.
         z_smoothed = _profiles.smooth_z_root(pid, float(centroid_3d[2]), timestamp_s)
         dist = dist * (z_smoothed / max(float(centroid_3d[2]), 1e-3))
         sm_dist, sm_elev, sm_azim = _profiles.smooth_display_values(
@@ -715,7 +724,9 @@ def process_frame(bgr_frame, timestamp_s: float = 0.0) -> List[PersonData]:
             if hip_vis:
                 h_ref  = _profiles.get_height_reference(p.person_id)
                 gnd_pt = p.joints_meters[hip_vis].mean(axis=0).copy()
-                # shift hip point downward (Y+ = down) to estimated floor level
+                # Estimate the floor position beneath each person by shifting the hip
+                # joint downward by the remaining body fraction below the hips.
+                # Y+ points downward in camera space.
                 gnd_pt[1] += (1.0 - VISIBLE_BODY_RATIO_HIPS) * h_ref
                 _ground_ref_buf.append((timestamp_s, gnd_pt))
         _last_ground_t = timestamp_s
