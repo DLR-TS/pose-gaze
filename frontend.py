@@ -18,6 +18,8 @@ import backend
 
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
+
+
 # ── Drawing helpers ───────────────────────────────────────────────────────────
 def _text(img: np.ndarray, text: str, pos: tuple,
           scale: float, color: tuple) -> None:
@@ -25,6 +27,7 @@ def _text(img: np.ndarray, text: str, pos: tuple,
                 scale, (0, 0, 0), TEXT_OUTLINE_THICKNESS + 2)
     cv2.putText(img, text, pos, cv2.FONT_HERSHEY_SIMPLEX,
                 scale, color, TEXT_OUTLINE_THICKNESS)
+
 
 def draw_ground_plane(
         img:         np.ndarray,
@@ -227,7 +230,7 @@ def _stop_rec(vw, nw, vp, np_) -> tuple:
     if nw is not None:
         nw.close()
         if np_ is not None: print(f"Saved NDJSON : {np_}")
-    return None, None, None
+    return None, None, None, None
 def main() -> None:
     cap = cv2.VideoCapture(VIDEO_PATH)
     if not cap.isOpened():
@@ -266,8 +269,7 @@ def main() -> None:
                 print("End of video.")
                 if rec:
                     rec = False
-                    vw, nw, vp = _stop_rec(vw, nw, vp, np_)
-                    np_ = None
+                    vw, nw, vp, np_ = _stop_rec(vw, nw, vp, np_)
                 paused = True; continue
             cur_frame = int(cap.get(cv2.CAP_PROP_POS_FRAMES))
             t_s       = cur_frame / fps
@@ -301,7 +303,7 @@ def main() -> None:
         if rec:
             if vw is not None: vw.write(canvas)
             if nw is not None:
-                nw.write(build_detection_message(persons, cur_frame/fps).to_json() + "\n")
+                nw.write(build_ndjson_line(persons, cur_frame / fps) + "\n")
 
         disp = cv2.resize(canvas, (dw, dh),
                           interpolation=cv2.INTER_AREA) if scale < 1.0 else canvas
@@ -310,8 +312,8 @@ def main() -> None:
         key = cv2.waitKey(_wait) & 0xFF
 
         if key in (ord("q"), 27):
-            vw, nw, vp = _stop_rec(vw, nw, vp, np_)
-            np_ = None; break
+            vw, nw, vp, np_ = _stop_rec(vw, nw, vp, np_)
+            break
         elif key == ord(" "):
             paused = not paused
         elif key == ord("r"):
@@ -326,8 +328,7 @@ def main() -> None:
                 print(f"Messages   : {np_}")
             else:
                 rec = False
-                vw, nw, vp = _stop_rec(vw, nw, vp, np_)
-                np_ = None
+                vw, nw, vp, np_ = _stop_rec(vw, nw, vp, np_)
         elif key == ord("a"):
             cap.set(cv2.CAP_PROP_POS_FRAMES,
                     max(0, cap.get(cv2.CAP_PROP_POS_FRAMES) - SEEK_STEP_SECONDS * fps))

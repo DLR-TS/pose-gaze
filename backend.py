@@ -17,6 +17,7 @@ from typing import Optional, List, Tuple
 from scipy.optimize import linear_sum_assignment
 
 from basics import *
+from basics import _Ema  # not exported by * due to underscore prefix
 
 # ── Environment ───────────────────────────────────────────────────────────────
 MODEL_DIR.mkdir(parents=True, exist_ok=True)
@@ -260,37 +261,6 @@ class PersonTracker:
                 result.append((pid, j))
 
         return result
-
-# ── EMA helper ────────────────────────────────────────────────────────────────
-class _Ema:
-    """Time-continuous exponential moving average keyed by person_id.
-
-    alpha = 1 - exp(-dt / tau) gives a rate-independent update regardless of
-    frame rate. Supports scalar and numpy-array values transparently.
-    """
-
-    def __init__(self, tau: float):
-        self._tau = tau
-        self._v:  dict = {}
-        self._t:  dict = {}
-
-    def __call__(self, pid: int, val, timestamp_s: float):
-        prev, last_t = self._v.get(pid), self._t.get(pid)
-        if prev is None:
-            self._v[pid] = val
-            self._t[pid] = timestamp_s
-            return val
-        dt  = max(0.0, timestamp_s - last_t)
-        a   = 1.0 - math.exp(-dt / self._tau) if dt > 1e-4 else 0.0
-        out = a * val + (1.0 - a) * prev
-        self._v[pid] = out
-        self._t[pid] = timestamp_s
-        return out
-
-    def reset(self, pid: int) -> None:
-        self._v.pop(pid, None)
-        self._t.pop(pid, None)
-
 
 # ── PersonProfiles ────────────────────────────────────────────────────────────
 class PersonProfiles:
@@ -586,7 +556,6 @@ def _fit_ground_plane() -> None:
     _ground_plane_g = GroundPlane(
         centroid=centroid.astype(np.float32),
         normal=normal,
-        n_samples=int(len(best_inliers)),
         inlier_ratio=float(inlier_ratio),
         fit_rmse=float(fit_rmse),
     )
