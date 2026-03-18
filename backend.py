@@ -261,19 +261,46 @@ class PersonTracker:
 
         return result
 
+# ── EMA helper ────────────────────────────────────────────────────────────────
+class _Ema:
+    """Time-continuous exponential moving average keyed by person_id.
+
+    alpha = 1 - exp(-dt / tau) gives a rate-independent update regardless of
+    frame rate. Supports scalar and numpy-array values transparently.
+    """
+
+    def __init__(self, tau: float):
+        self._tau = tau
+        self._v:  dict = {}
+        self._t:  dict = {}
+
+    def __call__(self, pid: int, val, timestamp_s: float):
+        prev, last_t = self._v.get(pid), self._t.get(pid)
+        if prev is None:
+            self._v[pid] = val
+            self._t[pid] = timestamp_s
+            return val
+        dt  = max(0.0, timestamp_s - last_t)
+        a   = 1.0 - math.exp(-dt / self._tau) if dt > 1e-4 else 0.0
+        out = a * val + (1.0 - a) * prev
+        self._v[pid] = out
+        self._t[pid] = timestamp_s
+        return out
+
+    def reset(self, pid: int) -> None:
+        self._v.pop(pid, None)
+        self._t.pop(pid, None)
+
+
 # ── PersonProfiles ────────────────────────────────────────────────────────────
 class PersonProfiles:
     def __init__(self):
         self._height_history:   dict = {}
-        self._pixel_height_ema: dict = {}
-        self._pixel_height_t:   dict = {}
-        self._z_root_ema:       dict = {}
-        self._z_root_t:         dict = {}
-        self._display_ema:      dict = {}
-        self._display_t:        dict = {}
+        self._height_published: dict = {}  # maps person_id to (timestamp, published_value); throttles height output to HEIGHT_PUBLISH_INTERVAL_S
         self._pos_history:      dict = {}
         self._vel_ema:          dict = {}
-        self._height_published: dict = {}  # maps person_id to (timestamp, published_value); throttles height output to HEIGHT_PUBLISH_INTERVAL_S
+        self._ema_pixel_h = _Ema(TAU_PIXEL_HEIGHT_S)
+        self._ema_display = _Ema(TAU_DISPLAY_S)
 
     def push_height_sample(self, person_id: int, height_m: float,
                            head_visible: bool, ankle_visible: bool) -> None:
@@ -308,57 +335,21 @@ class PersonProfiles:
     def smooth_pixel_height(self, person_id: int,
                             pixel_height: float,
                             timestamp_s:  float) -> float:
-        prev   = self._pixel_height_ema.get(person_id)
-        last_t = self._pixel_height_t.get(person_id)
-        if prev is None or last_t is None:
-            self._pixel_height_ema[person_id] = pixel_height
-            self._pixel_height_t[person_id]   = timestamp_s
-            return pixel_height
-        dt       = max(0.0, timestamp_s - last_t)
-        alpha    = 1.0 - math.exp(-dt / TAU_PIXEL_HEIGHT_S) if dt > 1e-4 else 0.0
-        smoothed = alpha * pixel_height + (1.0 - alpha) * prev
-        self._pixel_height_ema[person_id] = smoothed
-        self._pixel_height_t[person_id]   = timestamp_s
-        return smoothed
+        return float(self._ema_pixel_h(person_id, pixel_height, timestamp_s))
 
     def smooth_display_values(self, person_id: int,
                               distance_m:    float,
                               elevation_deg: float,
                               azimuth_deg:   float,
                               timestamp_s:   float) -> tuple:
-        last_t = self._display_t.get(person_id)
-        if person_id not in self._display_ema or last_t is None:
-            self._display_ema[person_id] = (distance_m, elevation_deg, azimuth_deg)
-            self._display_t[person_id]   = timestamp_s
-            return distance_m, elevation_deg, azimuth_deg
-        dt    = max(0.0, timestamp_s - last_t)
-        alpha = 1.0 - math.exp(-dt / TAU_DISPLAY_S) if dt > 1e-4 else 0.0
-        pd, pe, pa = self._display_ema[person_id]
-        delta = azimuth_deg - pa
-        if   delta >  180.: azimuth_deg -= 360.
-        elif delta < -180.: azimuth_deg += 360.
-        smoothed = (alpha * distance_m    + (1.0 - alpha) * pd,
-                    alpha * elevation_deg + (1.0 - alpha) * pe,
-                    alpha * azimuth_deg   + (1.0 - alpha) * pa)
-        self._display_ema[person_id] = smoothed
-        self._display_t[person_id]   = timestamp_s
-        return smoothed
-
-    def smooth_z_root(self, person_id: int,
-                      z_root: float,
-                      timestamp_s: float) -> float:
-        prev   = self._z_root_ema.get(person_id)
-        last_t = self._z_root_t.get(person_id)
-        if prev is None or last_t is None:
-            self._z_root_ema[person_id] = z_root
-            self._z_root_t[person_id]   = timestamp_s
-            return z_root
-        dt      = max(0.0, timestamp_s - last_t)
-        alpha   = 1.0 - math.exp(-dt / TAU_Z_ROOT_S) if dt > 1e-4 else 0.0
-        smoothed = alpha * z_root + (1.0 - alpha) * prev
-        self._z_root_ema[person_id] = smoothed
-        self._z_root_t[person_id]   = timestamp_s
-        return smoothed
+        prev = self._ema_display._v.get(person_id)
+        if prev is not None:
+            delta = azimuth_deg - prev[2]
+            if   delta >  180.: azimuth_deg -= 360.
+            elif delta < -180.: azimuth_deg += 360.
+        val = np.array([distance_m, elevation_deg, azimuth_deg], dtype=np.float64)
+        out = self._ema_display(person_id, val, timestamp_s)
+        return float(out[0]), float(out[1]), float(out[2])
 
     def compute_velocity(self, person_id: int,
                          centroid_m:  np.ndarray,
@@ -691,11 +682,6 @@ def process_frame(bgr_frame, timestamp_s: float = 0.0) -> List[PersonData]:
             head_visible  = any(sc[j] > MIN_KEYPOINT_CONFIDENCE for j in _JOINT_HEAD),
             ankle_visible = any(sc[j] > MIN_KEYPOINT_CONFIDENCE for j in _JOINT_ANKLES))
 
-        # Smooth only the forward depth component (z) via EMA.
-        # Spherical distance and angles are then derived from the smoothed z,
-        # which avoids oscillation in distance without distorting bearing angles.
-        z_smoothed = _profiles.smooth_z_root(pid, float(centroid_3d[2]), timestamp_s)
-        dist = dist * (z_smoothed / max(float(centroid_3d[2]), 1e-3))
         sm_dist, sm_elev, sm_azim = _profiles.smooth_display_values(
             pid, dist, elev, azim, timestamp_s)
         sm_h = _profiles.get_published_height(pid, timestamp_s)

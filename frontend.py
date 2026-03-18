@@ -18,15 +18,6 @@ import backend
 
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
-# Precomputed grid x-positions for the ground plane overlay.
-# These depend only on configuration constants, so they are computed once at import time.
-_GRID_X_VALUES = np.arange(
-    -GROUND_PLANE_X_HALF_M,
-     GROUND_PLANE_X_HALF_M + 1e-9,
-     GROUND_PLANE_X_STEP_M,
-)
-
-
 # ── Drawing helpers ───────────────────────────────────────────────────────────
 def _text(img: np.ndarray, text: str, pos: tuple,
           scale: float, color: tuple) -> None:
@@ -34,7 +25,6 @@ def _text(img: np.ndarray, text: str, pos: tuple,
                 scale, (0, 0, 0), TEXT_OUTLINE_THICKNESS + 2)
     cv2.putText(img, text, pos, cv2.FONT_HERSHEY_SIMPLEX,
                 scale, color, TEXT_OUTLINE_THICKNESS)
-
 
 def draw_ground_plane(
         img:         np.ndarray,
@@ -99,7 +89,7 @@ def draw_ground_plane(
     _gp_ok = _gp_valid and gp.inlier_ratio > 0.3
     if _gp_ok:
         lthick = max(1, round(GROUND_PLANE_LINE_THICKNESS * ds))
-        for x_m in _GRID_X_VALUES:
+        for x_m in GROUND_PLANE_GRID_X:
             xn = max(0, min(w_img-1, _x_px(x_m, z_near)))
             xf = max(0, min(w_img-1, _x_px(x_m, z_far)))
             cv2.line(img, (xn, y_near), (xf, y_far),

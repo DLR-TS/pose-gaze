@@ -61,7 +61,6 @@ GAZE_RAY_LENGTH_M = 3.0
 
 # ── EMA time constants [s] ────────────────────────────────────────────────────
 TAU_PIXEL_HEIGHT_S = 0.3   # EMA time constant for pixel-height smoothing
-TAU_Z_ROOT_S       = 0.15  # EMA for depth anchor; damps jumps on visibility change
 TAU_DISPLAY_S      = 1.0   # EMA for displayed distance/angles (visual stability)
 TAU_CAM_HEIGHT_S   = 5.0   # EMA for camera height; 5s suits static camera
 
@@ -176,6 +175,13 @@ CAM_HEIGHT_MIN_M                  = 0.5   # plausible camera height range [m]
 CAM_HEIGHT_MAX_M                  = 12.0  # plausible camera height range [m]
 GROUND_PLANE_RANSAC_INLIER_DIST   = 0.30  # inlier threshold [m]; accounts for pose depth noise
 GROUND_PLANE_TEMPORAL_DECAY_S     = 10.0  # age weight decay for SVD refit
+
+# Grid x-positions for the ground plane overlay, computed once from the constants above.
+# np.linspace guarantees both endpoints are included with exact floating-point values.
+_n_grid = round(2 * GROUND_PLANE_X_HALF_M / GROUND_PLANE_X_STEP_M) + 1
+GROUND_PLANE_GRID_X = np.linspace(
+    -GROUND_PLANE_X_HALF_M, GROUND_PLANE_X_HALF_M, _n_grid, dtype=np.float32)
+del _n_grid
 
 # ── Shared data types ─────────────────────────────────────────────────────────
 @dataclass
