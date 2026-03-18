@@ -154,12 +154,25 @@ def load_camera_params(json_path: Path) -> dict:
     }
 
 def fallback_camera_params(frame_width: int, frame_height: int, fps: float) -> dict:
+    """Construct camera intrinsics for a perfect pinhole camera.
+
+    Used when no calibration JSON is available. Assumes:
+      - principal point at the image centre (CX = W/2, CY = H/2)
+      - focal length equal to the image diagonal in pixels, which
+        corresponds to a ~53 degree diagonal field of view
+      - zero lens distortion
+    """
+    fx = fy = math.sqrt(frame_width ** 2 + frame_height ** 2)
+    cx, cy  = frame_width / 2.0, frame_height / 2.0
+    K = np.array([[fx, 0., cx],
+                  [0., fy, cy],
+                  [0., 0., 1.]], dtype=np.float64)
     return {
-        "FX": K_FALLBACK[0, 0], "FY": K_FALLBACK[1, 1],
-        "CX": K_FALLBACK[0, 2], "CY": K_FALLBACK[1, 2],
+        "FX": fx, "FY": fy, "CX": cx, "CY": cy,
         "W": frame_width, "H": frame_height, "FPS": fps,
-        "K": K_FALLBACK.copy(), "D": np.zeros(5, dtype=np.float64),
-        "source": "K_FALLBACK (no calibration JSON found)", "crop": None,
+        "K": K, "D": np.zeros(5, dtype=np.float64),
+        "source": "perfect pinhole fallback (no calibration JSON found)",
+        "crop": None,
     }
 
 # ── Lens-distortion correction ────────────────────────────────────────────────

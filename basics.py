@@ -12,11 +12,9 @@ MODEL_DIR       = SCRIPT_DIR / "models"
 OUTPUT_DIR      = SCRIPT_DIR / "recordings"
 CAMERA_JSON_DIR: Path = SCRIPT_DIR / "media"
 
-VIDEO_PATH   = CAMERA_JSON_DIR / "video_1808x1392_mvBlueCOUGAR-X109b_crop205-391-2013-1783.mp4"
+VIDEO_PATH   = CAMERA_JSON_DIR / "test1.mp4"
 FPS_FALLBACK = 13.2
 
-K_FALLBACK = np.array(
-    [[4637.7, 0., 2056.], [0., 4637.7, 1088.], [0., 0., 1.]], dtype=np.float64)
 
 # ── Keypoint / detection thresholds ──────────────────────────────────────────
 MIN_KEYPOINT_CONFIDENCE       = 0.25   # joints below this score are treated as not visible
