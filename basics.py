@@ -12,7 +12,7 @@ MODEL_DIR       = SCRIPT_DIR / "models"
 OUTPUT_DIR      = SCRIPT_DIR / "recordings"
 CAMERA_JSON_DIR: Path = SCRIPT_DIR / "media"
 
-VIDEO_PATH   = CAMERA_JSON_DIR / "test1.mp4"
+VIDEO_PATH   = CAMERA_JSON_DIR / "video_1808x1392_mvBlueCOUGAR-X109b_crop205-391-2013-1783.mp4"
 FPS_FALLBACK = 13.2
 
 
