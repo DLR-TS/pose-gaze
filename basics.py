@@ -1,7 +1,7 @@
 """basics.py – single source of truth for all constants and shared data types."""
 import math
 from pathlib import Path
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass, field, asdict
 from typing import Optional, List, Tuple
 import numpy as np
 import json as _json
@@ -12,7 +12,7 @@ MODEL_DIR       = SCRIPT_DIR / "models"
 OUTPUT_DIR      = SCRIPT_DIR / "recordings"
 CAMERA_JSON_DIR: Path = SCRIPT_DIR / "media"
 
-VIDEO_PATH   = CAMERA_JSON_DIR / "video_1808x1392_mvBlueCOUGAR-X109b_crop205-391-2013-1783.mp4"
+VIDEO_PATH   = CAMERA_JSON_DIR / "video_4112x2176_mvBlueCOUGAR-X109b_crop0-0-4112-2176.mp4"
 FPS_FALLBACK = 13.2
 
 
@@ -45,6 +45,8 @@ RTMW3D_HEAD_ANKLE_Z_RATIO    = 0.96  # fraction of body height spanned by the mo
 VISIBLE_BODY_RATIO_ANKLES    = 1.00  # full body in frame; pixel span equals full body height
 VISIBLE_BODY_RATIO_KNEES     = 0.75  # body cropped below knees; pixel span covers ~75 % of height
 VISIBLE_BODY_RATIO_HIPS      = 0.52  # body cropped at hips; pixel span covers ~52 % of height
+_BODY_DEPTH_M = 0.25            # frontal depth of standing adult [m]
+_SHOULDER_W_M = 0.45            # shoulder width of standing adult [m]
 JOINT_DEPTH_MIN_M            = 0.1   # minimum allowed joint depth [m]; prevents division artifacts for joints very close to the camera
 JOINT_DEPTH_MAX_M            = 60.0  # maximum allowed joint depth [m]; joints beyond this distance are clamped
 BODY_HEIGHT_MIN_M            = 0.5
@@ -168,7 +170,7 @@ GROUND_PLANE_X_HALF_M             = 4.0   # half-width of the ground plane grid 
 GROUND_PLANE_NEAR_FRAC            = 0.75  # image-height fraction at which the near edge of the ground plane overlay is drawn
 GROUND_PLANE_FAR_FRAC             = 0.25  # image-height fraction at which the far edge of the ground plane overlay is drawn
 GROUND_PLANE_RANSAC_ITERATIONS    = 50    # number of random 3-point samples drawn per RANSAC plane fit
-GROUND_PLANE_NORMAL_MIN_Y         = 0.5   # minimum absolute Y-component of the fitted plane normal; rejects near-vertical fits that indicate a bad sample set
+GROUND_PLANE_NORMAL_MIN_Z         = 0.5   # minimum absolute Y-component of the fitted plane normal; rejects near-vertical fits that indicate a bad sample set
 CAM_HEIGHT_MIN_M                  = 0.5   # lower bound for accepted camera height estimates [m]; measurements below this are discarded
 CAM_HEIGHT_MAX_M                  = 12.0  # upper bound for accepted camera height estimates [m]; measurements above this are discarded
 GROUND_PLANE_RANSAC_INLIER_DIST   = 0.30  # distance threshold for classifying a point as a RANSAC inlier [m]; should be larger than typical pose depth noise
@@ -248,36 +250,87 @@ class CamHeightEMA:
         return self._ema._v.get(0)
 @dataclass
 class ObjectVelocity:
-    """Velocity vector in world-aligned camera space.
+    """Velocity in REP-103 convention (ROS).
 
-    vx = forward [m/s], vy = lateral right [m/s], vz = up [m/s].
+    vx = forward [m/s], vy = lateral left [m/s], vz = up [m/s].
     Rotational rates rx/ry/rz are reserved and currently always zero.
     """
     vx: float = 0.0; vy: float = 0.0; vz: float = 0.0
     rx: float = 0.0; ry: float = 0.0; rz: float = 0.0
 
+
+@dataclass
+class ObjectPose:
+    """Position in REP-103: x=forward, y=left, z=up.
+    yaw: rotation around Z-up, 0=forward, positive=left [rad].
+    covariance: [σ_x², σ_y², σ_yaw²] or None.
+    """
+    x:          float = 0.0
+    y:          float = 0.0
+    z:          float = 0.0
+    yaw:        float = 0.0
+    covariance: Optional[List[float]] = None
+
+
+@dataclass
+class ObjectSize:
+    # Requires _BODY_DEPTH_M and _SHOULDER_W_M defined before this class (step 1.1-A).
+    l: float = _BODY_DEPTH_M   # forward extent [m]
+    w: float = _SHOULDER_W_M   # lateral extent [m]
+    h: float = 0.0             # height [m]
+
+
+@dataclass
+class ObjectLabel:
+    text:  str             = ""
+    value: Optional[float] = None   # spd_kmh; None = unknown
+
+
+@dataclass
+class ObjectGaze:
+    """Gaze ray in REP-103.
+    az_deg: horizontal angle from forward, positive=right [deg].
+    el_deg: vertical angle above horizon, positive=up [deg].
+    Both angles are frame-invariant (identical to camera-space values).
+    field() required: np.ndarray must not be a mutable class-level default.
+    """
+    origin:    np.ndarray = field(default_factory=lambda: np.zeros(3, np.float32))
+    direction: np.ndarray = field(default_factory=lambda: np.zeros(3, np.float32))
+    az_deg: float = 0.0
+    el_deg: float = 0.0
+
+
+@dataclass
+class ObjectMsg:
+    """Fully publishable person object. All vectors in REP-103.
+    Python field 'cls' → JSON key 'class' in build_ndjson_line().
+    keypoints_3d and joint_scores are None until enrich_with_skeleton() runs.
+    gaze/gaze_valid set by enrich_with_skeleton(); default = no gaze.
+    """
+    id:           int
+    cls:          str            = "person"
+    score:        float          = 0.0
+    pose:         ObjectPose     = field(default_factory=ObjectPose)
+    size:         ObjectSize     = field(default_factory=ObjectSize)
+    velocity:     ObjectVelocity = field(default_factory=ObjectVelocity)
+    label:        ObjectLabel    = field(default_factory=ObjectLabel)
+    keypoints_3d: Optional[np.ndarray] = None   # (17,3) REP-103 [m]
+    joint_scores: Optional[np.ndarray] = None   # (17,) float32
+    gaze:         Optional[ObjectGaze] = None
+    gaze_valid:   bool = False
+
+
 # ── Per-frame detection result ────────────────────────────────────────────────
 @dataclass
 class PersonData:
-    """All data associated with one detected person for a single frame.
-
-    pixel_coords and joints_meters are (17, 2) and (17, 3) arrays indexed by
-    COCO joint index. joint_visible is a boolean mask of the same length.
-    Spherical coordinates (distance_m, elevation_deg, azimuth_deg) are relative
-    to the camera origin; azimuth is 0 straight ahead, positive to the right.
+    """Per-frame result for one tracked person.
+    object_msg   : fully publishable; all fields in REP-103.
+    pixel_coords : (17,2) int32 — 2D only, used for drawing.
+    joint_visible: (17,) bool   — visibility mask for drawing.
     """
-    person_id:        int
-    pixel_coords:     np.ndarray
-    joint_scores:     np.ndarray
-    joints_meters:    np.ndarray
-    distance_m:       float
-    elevation_deg:    float
-    azimuth_deg:      float
-    height_m:         float
-    gaze_origin_m:    Optional[np.ndarray]
-    gaze_direction:   Optional[np.ndarray]
-    joint_visible:    Optional[np.ndarray]      = None
-    velocity_m_per_s: Optional[ObjectVelocity] = None
+    object_msg:    ObjectMsg
+    pixel_coords:  np.ndarray
+    joint_visible: Optional[np.ndarray] = None
 
 # ── Projection helpers ───────────────────────────────────────────────────────
 def proj3d2d(point_3d, focal_x, focal_y,
@@ -301,46 +354,52 @@ def gaze_angles_3d(gaze_unit_dir) -> tuple:
 
 
 # ── NDJSON export ────────────────────────────────────────────────────────────
-_BODY_DEPTH_M = 0.25  # approximate frontal depth of a standing adult [m]; used for bounding box estimation
-_SHOULDER_W_M = 0.45  # approximate shoulder width of a standing adult [m]; used for bounding box estimation
-
-
 def build_ndjson_line(persons: List[PersonData], timestamp_s: float,
                       frame_id: str = "camera") -> str:
     """Serialise a list of PersonData snapshots as a single NDJSON line.
-
-    Each person is encoded as a flat dict with pose, size, velocity, and a
-    human-readable label. The result is ready to write directly to an .ndjson file.
+    All pose/velocity vectors are in REP-103 (x=fwd, y=left, z=up).
+    Python field 'cls' is serialised as JSON key 'class'.
+    Signature is backward-compatible with existing frontend call site.
     """
     sec  = int(timestamp_s)
     nsec = int((timestamp_s - sec) * 1e9)
     objects = []
     for p in persons:
-        er  = math.radians(p.elevation_deg)
-        ar  = math.radians(p.azimuth_deg)
-        hd  = p.distance_m * math.cos(er)
-        yaw = math.atan2(math.sin(ar), math.cos(ar))
-        vx = vy = spd = 0.0
-        if p.velocity_m_per_s is not None:
-            vx  = p.velocity_m_per_s.vx
-            vy  = p.velocity_m_per_s.vy
-            spd = math.sqrt(vx**2 + vy**2)
-        obj = {
-            "id":    p.person_id,
-            "class": "person",
-            "score": round(float(p.joint_scores[p.joint_visible].mean())
-                           if p.joint_visible is not None and p.joint_visible.any()
-                           else 0.0, 3),
-            "pose":  {"x": round(hd * math.cos(ar), 3),
-                      "y": round(hd * math.sin(ar), 3),
-                      "z": round(p.distance_m * math.sin(er), 3),
-                      "yaw": round(yaw, 4)},
-            "size":  {"l": _BODY_DEPTH_M, "w": _SHOULDER_W_M,
-                      "h": round(p.height_m, 3)},
-            "velocity": {"vx": round(vx, 3), "vy": round(vy, 3)},
-            "label": f"H:{p.height_m*100:.0f}cm spd:{spd*3.6:.1f}km/h",
+        o = p.object_msg
+        pose_d: dict = {
+            "x":   round(o.pose.x,   3),
+            "y":   round(o.pose.y,   3),
+            "z":   round(o.pose.z,   3),
+            "yaw": round(o.pose.yaw, 4),
         }
+        if o.pose.covariance is not None:
+            pose_d["covariance"] = [round(v, 4) for v in o.pose.covariance]
+        obj: dict = {
+            "id":    o.id,
+            "class": o.cls,
+            "score": round(o.score, 3),
+            "pose":  pose_d,
+            "size":  {"l": round(o.size.l, 3),
+                      "w": round(o.size.w, 3),
+                      "h": round(o.size.h, 3)},
+            "velocity": {"vx": round(o.velocity.vx, 3),
+                         "vy": round(o.velocity.vy, 3),
+                         "vz": round(o.velocity.vz, 3)},
+            "label": {"text": o.label.text, "value": o.label.value},
+        }
+        if o.gaze_valid and o.gaze is not None:
+            obj["gaze"] = {
+                "origin":    [round(float(v), 4) for v in o.gaze.origin],
+                "direction": [round(float(v), 4) for v in o.gaze.direction],
+                "az_deg":    round(o.gaze.az_deg, 1),
+                "el_deg":    round(o.gaze.el_deg, 1),
+            }
+        if o.keypoints_3d is not None:
+            obj["keypoints_3d"] = [[round(float(v), 4) for v in row]
+                                   for row in o.keypoints_3d]
+        if o.joint_scores is not None:
+            obj["joint_scores"] = [round(float(s), 3) for s in o.joint_scores]
         objects.append(obj)
-    msg = {"header": {"sec": sec, "nanosec": nsec, "frame_id": frame_id},
-           "objects": objects}
-    return _json.dumps(msg, separators=(",", ":"))
+    line = {"header": {"sec": sec, "nanosec": nsec, "frame_id": frame_id},
+            "objects": objects}
+    return _json.dumps(line, separators=(",", ":"))
